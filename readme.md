@@ -75,6 +75,34 @@ The pipeline is organized into clearly separated layers.
 - Adaptive threshold tuning to prevent cluster collapse
 - Filtering of weak semantic segments
 
+#### Research Basis for Hierarchical Clustering Strategy
+
+The semantic section reconstruction layer is inspired by recent research demonstrating the effectiveness of hierarchical agglomerative clustering in structured summarization pipelines.
+
+In particular, the paper:
+
+**Dalal et al. (2024)** — *Text summarization for pharmaceutical sciences using hierarchical clustering with a weighted evaluation methodology*  
+Published in *Scientific Reports (Nature)*.
+
+The authors demonstrate that incorporating cosine-based hierarchical agglomerative clustering prior to abstractive summarization significantly improves:
+
+- ROUGE scores  
+- Semantic coherence  
+- Business entity retention  
+- Structural completeness  
+
+Their results show that clustering semantically related sentences before summary generation leads to measurable improvements compared to direct summarization without clustering.
+
+This platform extends that strategy by:
+- Applying clustering to LLM-generated chunk summaries  
+- Using adaptive distance thresholds instead of fixed cluster counts  
+- Introducing mode-aware filtering (Research vs Academic)  
+- Integrating structural coverage and semantic alignment validation  
+
+Reference:  
+Dalal, A., Ranjan, S., Bopaiah, Y., et al. (2024). *Text summarization for pharmaceutical sciences using hierarchical clustering with a weighted evaluation methodology.* Scientific Reports, 14, 20149.  
+https://doi.org/10.1038/s41598-024-70618-w
+
 ### Layer 4 — Section Abstraction
 - Deduplication of cross-chunk themes
 - Consolidation of related insights
