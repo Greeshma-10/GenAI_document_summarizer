@@ -111,8 +111,9 @@ Structured JSON response including:
   "reliability_flags": {}
 }
 
+## Architecture diagram
+![Architecture diagram](https://github.com/user-attachments/assets/06c198f1-fb50-4cf7-8785-92bb5cfb21ed)
 
-https://github.com/user-attachments/assets/06c198f1-fb50-4cf7-8785-92bb5cfb21ed
 ```
 
 ---
