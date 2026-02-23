@@ -16,25 +16,6 @@ The system is engineered with modular architecture, centralized configuration, s
 
 ---
 
-## Core Challenge
-
-Long documents distribute meaning across sections and abstraction levels. Key insights may appear:
-
-- Non-linearly across multiple segments
-- At varying conceptual depths
-- Inside structured formats such as tables
-
-Naive summarization approaches typically collapse structure and fail to guarantee representation completeness.
-
-### Objectives
-
-- Preserve document hierarchy
-- Enable multi-level abstraction
-- Quantify representation completeness
-- Reduce hallucination risk
-
----
-
 ## Solution Strategy
 
 The platform follows a hierarchical summarization design:
@@ -208,6 +189,63 @@ Unlike most summarization systems, this platform introduces quantitative signals
 
 ---
 
+# Running the Application
+
+## 1. Prerequisites
+
+- Python 3.9+
+- AWS credentials configured (via `.env` or environment variables)
+- Required dependencies installed
+
+```bash
+pip install -r requirements.txt
+```
+
+> Ensure your `.env` file contains required AWS and model configuration variables.
+
+---
+
+## 2. Start the Backend (FastAPI via Uvicorn)
+
+The backend exposes the summarization pipeline as an API service.
+
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+- **Default URL:** http://localhost:8000
+- **API Docs (if enabled):** http://localhost:8000/docs
+
+---
+
+## 3. Start the Frontend (Streamlit)
+
+In a separate terminal:
+
+```bash
+streamlit run frontend.py
+```
+
+- **Default URL:** http://localhost:8501
+
+The frontend connects to the running backend service and allows users to upload documents and retrieve structured summaries.
+
+---
+
+## 4. End-to-End Flow
+
+```
+Start backend (Uvicorn)
+        ↓
+Start frontend (Streamlit)
+        ↓
+Upload document via UI
+        ↓
+Pipeline executes through hierarchical layers
+        ↓
+Structured JSON response is rendered in the interface
+```
+
 ## Performance Characteristics
 
 - Parallel chunk processing
@@ -223,8 +261,6 @@ Empirical tests across increasing token sizes demonstrate **stable structural co
 - Retrieval-augmented grounding verification
 - Multimodal document support
 - Model benchmarking framework
-- Token usage telemetry
-- Containerized deployment
 
 ---
 
