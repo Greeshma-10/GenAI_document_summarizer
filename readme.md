@@ -4,7 +4,7 @@
 
 ---
 
-## 📋 Overview
+## Overview
 
 Traditional summarization systems often flatten information, omit important sections, or generate ungrounded abstractions. This platform addresses those limitations through:
 
@@ -16,7 +16,7 @@ The system is engineered with modular architecture, centralized configuration, s
 
 ---
 
-## 🧩 Core Challenge
+## Core Challenge
 
 Long documents distribute meaning across sections and abstraction levels. Key insights may appear:
 
@@ -35,7 +35,7 @@ Naive summarization approaches typically collapse structure and fail to guarante
 
 ---
 
-## 🚀 Solution Strategy
+## Solution Strategy
 
 The platform follows a hierarchical summarization design:
 
@@ -50,7 +50,7 @@ Each stage introduces controlled abstraction while maintaining traceability to s
 
 ---
 
-## 🏗️ System Architecture
+## System Architecture
 
 The pipeline is organized into clearly separated layers.
 
@@ -140,10 +140,10 @@ Structured JSON response including:
 }
 ```
 ## Architecture diagram
-![Architecture diagram](https://github.com/user-attachments/assets/06c198f1-fb50-4cf7-8785-92bb5cfb21ed)
+![Architecture diagram](https://github.com/user-attachments/assets/a02774a3-bc2f-48b0-9394-51a283f3118c)
 ---
 
-## ⚙️ Key Engineering Principles
+## Key Engineering Principles
 
 ### 1. Configuration-Driven Design
 All runtime parameters are centralized in `config.py`, enabling safe experimentation without modifying business logic.
@@ -175,7 +175,7 @@ Unlike most summarization systems, this platform introduces quantitative signals
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```
 ├── app/
@@ -194,7 +194,7 @@ Unlike most summarization systems, this platform introduces quantitative signals
 
 ---
 
-## 🛠️ Technology Stack
+## Technology Stack
 
 | Component | Technology |
 |---|---|
@@ -208,7 +208,7 @@ Unlike most summarization systems, this platform introduces quantitative signals
 
 ---
 
-## 📈 Performance Characteristics
+## Performance Characteristics
 
 - Parallel chunk processing
 - Stage-level latency measurement
@@ -218,16 +218,16 @@ Empirical tests across increasing token sizes demonstrate **stable structural co
 
 ---
 
-## 🔮 Future Enhancements
+## Future Enhancements
 
-- [ ] Retrieval-augmented grounding verification
-- [ ] Multimodal document support
-- [ ] Model benchmarking framework
-- [ ] Token usage telemetry
-- [ ] Containerized deployment
+- Retrieval-augmented grounding verification
+- Multimodal document support
+- Model benchmarking framework
+- Token usage telemetry
+- Containerized deployment
 
 ---
 
-## 📝 Summary
+## Summary
 
 This project demonstrates how long-form document summarization can be approached as a **structured, hierarchical, and evaluable system** rather than a single-pass generation task. It integrates abstraction control, semantic reconstruction, grounding validation, and measurable completeness into a cohesive GenAI architecture.
