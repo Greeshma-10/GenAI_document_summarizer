@@ -1,9 +1,9 @@
 from typing import List, Dict
 import numpy as np # type: ignore
 from sklearn.cluster import AgglomerativeClustering # type: ignore
-from config import settings
-from logger import logger
-from services.bedrock_service import get_embedding
+from v1.config import settings
+from v1.logger import logger
+from v1.services.bedrock_service import get_embedding
 
 BASE_DISTANCE_RESEARCH = settings.BASE_DISTANCE_RESEARCH
 BASE_DISTANCE_ACADEMIC = settings.BASE_DISTANCE_ACADEMIC

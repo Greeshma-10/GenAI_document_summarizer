@@ -1,6 +1,6 @@
 import logging
 import os
-from config import settings
+from v1.config import settings
 
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)

@@ -3,10 +3,10 @@ import time
 import re
 from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from config import settings
-from logger import logger
-from prompts.chunk import build_chunk_summary_prompt
-from services.bedrock_service import invoke_llm
+from v1.config import settings
+from v1.logger import logger
+from v1.prompts.chunk import build_chunk_summary_prompt
+from v1.services.bedrock_service import invoke_llm
 
 MAX_WORKERS = settings.MAX_WORKERS
 

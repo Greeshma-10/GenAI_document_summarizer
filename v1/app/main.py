@@ -1,12 +1,12 @@
 from fastapi import FastAPI, UploadFile, File, Form
-from services.ingestion import ingest_document
-from services.chunking import chunk_text
-from services.summarizer import summarize_chunks
-from services.section_summarizer import summarize_section
-from services.executive_summarizer import generate_executive_summary
-from services.semantic_section_builder import build_semantic_sections
-from services.document_assembler import assemble_document
-from services.meaning_evaluator import compute_meaning_coverage
+from v1.ingestion.document_loader import ingest_document
+from v1.pipelines.summarization.chunking import chunk_text
+from v1.pipelines.summarization.summarizer import summarize_chunks
+from v1.pipelines.summarization.section_summarizer import summarize_section
+from v1.pipelines.summarization.executive_summarizer import generate_executive_summary
+from v1.pipelines.summarization.semantic_section_builder import build_semantic_sections
+from v1.pipelines.summarization.document_assembler import assemble_document
+from v1.pipelines.evaluation.meaning_evaluator import compute_meaning_coverage
 
 import time
 

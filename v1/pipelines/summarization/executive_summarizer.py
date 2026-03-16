@@ -1,12 +1,12 @@
 from typing import List, Dict
-from config import settings
-from logger import logger
-from prompts.executive import (
+from v1.config import settings
+from v1.logger import logger
+from v1.prompts.executive import (
     build_formatted_input,
     build_research_executive_prompt,
     build_academic_executive_prompt
 )
-from services.bedrock_service import invoke_llm
+from v1.services.bedrock_service import invoke_llm
 
 # PUBLIC ENTRY=
 

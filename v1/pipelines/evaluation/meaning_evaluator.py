@@ -1,5 +1,5 @@
 import numpy as np # type: ignore
-from services.bedrock_service import get_embedding
+from v1.services.bedrock_service import get_embedding
 
 
 def cosine_similarity(vec1, vec2):

@@ -1,4 +1,4 @@
-from schema.document_schema import FinalOutput
+from v1.schema.document_schema import FinalOutput
 from typing import List, Dict
 
 # SECTION FAILURE DETECTOR

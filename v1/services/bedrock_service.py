@@ -2,8 +2,8 @@ import boto3 # type: ignore
 import json
 import time
 from typing import Dict, List
-from config import settings
-from logger import logger
+from v1.config import settings
+from v1.logger import logger
 import time
 
 # CLIENT INITIALIZATION
