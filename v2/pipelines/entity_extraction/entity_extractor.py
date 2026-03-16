@@ -2,7 +2,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from v2.services.bedrock_service import invoke_llm
 
 
-prompt = ChatPromptTemplate.from_template(
+# Research prompt (your existing one)
+research_prompt = ChatPromptTemplate.from_template(
 """
 You are an expert research paper analyst.
 
@@ -34,7 +35,48 @@ Research Text:
 )
 
 
-def extract_entities(text: str):
+# Academic prompt (more generic disciplines)
+academic_prompt = ChatPromptTemplate.from_template(
+"""
+You are an academic document entity extraction system.
+
+Extract important academic entities from the text.
+
+Most entities in academic documents should go under **key_concepts**.
+Use other categories only if clearly applicable.
+
+Entity categories:
+
+models: theoretical models, frameworks, or systems
+datasets: datasets, study data, surveys, or experimental data
+metrics: statistical measures, rates, scores, or indicators
+organizations: universities, research institutes, companies, or agencies
+tasks: research objectives, analyses, experiments, or investigations
+key_concepts: important theories, ideas, terminology, or academic concepts
+
+Return ONLY valid JSON.
+
+JSON format:
+
+{{
+ "models": [],
+ "datasets": [],
+ "metrics": [],
+ "organizations": [],
+ "tasks": [],
+ "key_concepts": []
+}}
+
+Academic Text:
+{text}
+"""
+)
+def extract_entities(text: str, mode: str = "research"):
+
+    if mode == "academic":
+        prompt = academic_prompt
+    else:
+        prompt = research_prompt
 
     formatted_prompt = prompt.format(text=text)
 
