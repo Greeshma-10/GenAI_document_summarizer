@@ -17,7 +17,7 @@ from v2.pipelines.summarization.semantic_section_builder import build_semantic_s
 from v2.pipelines.summarization.document_assembler import assemble_document
 
 # Evaluation
-#from v2.pipelines.evaluation.meaning_evaluator import compute_meaning_coverage
+from v2.pipelines.evaluation.meaning_evaluator import compute_coverage_score
 
 # Entity extraction
 from v2.pipelines.entity_extraction.entity_extractor import extract_entities
@@ -156,7 +156,7 @@ async def summarize(
         total_chunks=len(chunks)
     )
 
-    meaning_score = compute_meaning_coverage(
+    meaning_score = compute_coverage_score(
         section_summaries,
         executive_summary.get("executive_summary", "")
     )
@@ -183,6 +183,8 @@ async def summarize(
     graph_builder = GraphBuilder()
     all_triples = []
 
+    _INVERSE_PAIRS = {"USES": "USED_IN", "USED_IN": "USES"}
+
     for sec in section_summaries:
         sec_text = sec.get("section_summary", "")
         if not sec_text:
@@ -190,13 +192,28 @@ async def summarize(
         triples = relation_extractor.extract_relations(sec_text, entity_dict)
         all_triples.extend(triples)
 
+    # Deduplicate — exact + semantic inverse
+    seen_keys = set()
+    unique_triples = []
+    for t in all_triples:
+        key = (t.subject.lower(), t.relation, t.object.lower())
+        if key in seen_keys:
+            continue
+        inverse_rel = _INVERSE_PAIRS.get(t.relation)
+        if inverse_rel:
+            inverse_key = (t.object.lower(), inverse_rel, t.subject.lower())
+            if inverse_key in seen_keys:
+                seen_keys.add(key)
+                continue
+        seen_keys.add(key)
+        unique_triples.append(t)
+
     try:
         graph_builder.clear_graph()
-        graph_builder.insert_triples(all_triples)
-        print(f"📥 Inserted {len(all_triples)} triples into Neo4j")
+        graph_builder.insert_triples(unique_triples)
+        print(f"📥 Inserted {len(unique_triples)} triples into Neo4j")
     except Exception as e:
         print("⚠️ Neo4j insertion failed:", str(e))
-
     total_time = round(time.time() - total_start, 2)
 
     response = final_output.model_dump()

@@ -2,6 +2,8 @@
 Graph Service — two query methods:
   1. query()     — unified structured query (neighbours / path / by-type / subgraph)
   2. query_nl()  — natural language → Cypher → results
+
+Connection: keep-alive + auto-reconnect on stale connections
 """
 
 import os
@@ -59,13 +61,41 @@ Cypher:
 class GraphService:
 
     def __init__(self, model_name: str = "llama3"):
-        self.driver = GraphDatabase.driver(
-            os.getenv("NEO4J_URI"),
-            auth=(os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD"))
-        )
+        self._uri  = os.getenv("NEO4J_URI")
+        self._auth = (os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD"))
+        self.driver = self._create_driver()
         self.driver.verify_connectivity()
         print("✅ Neo4j connection successful")
         self.llm = OllamaLLM(model=model_name)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    def _create_driver(self):
+        """Create driver with keep-alive and connection pool settings."""
+        return GraphDatabase.driver(
+            self._uri,
+            auth=self._auth,
+            max_connection_lifetime=3600,       # recreate connections after 1hr
+            max_connection_pool_size=10,
+            connection_acquisition_timeout=60,
+            keep_alive=True                     # keep TCP connection alive
+        )
+
+    def _session(self):
+        """
+        Return a session, auto-reconnecting if the driver has gone stale.
+        Use this instead of self.driver.session() everywhere.
+        """
+        try:
+            session = self.driver.session()
+            return session
+        except Exception:
+            print("🔄 Neo4j connection stale — reconnecting...")
+            try:
+                self.driver.close()
+            except Exception:
+                pass
+            self.driver = self._create_driver()
+            return self.driver.session()
 
     def close(self):
         self.driver.close()
@@ -76,7 +106,7 @@ class GraphService:
     # ─────────────────────────────────────────────────────────────────────────
     def query(self, query_type: str, **kwargs) -> dict:
 
-        with self.driver.session() as session:
+        with self._session() as session:
 
             # ── neighbours ───────────────────────────────────────────────────
             if query_type == "neighbours":
@@ -180,7 +210,7 @@ class GraphService:
     # NATURAL LANGUAGE QUERY
     # ─────────────────────────────────────────────────────────────────────────
     def query_nl(self, question: str, limit: int = 20) -> dict:
-        print(f"\n\U0001f5e3\ufe0f  NL QUERY: {question}")
+        print(f"\n🗣️  NL QUERY: {question}")
 
         try:
             raw    = self.llm.invoke(NL_PROMPT.format(question=question))
@@ -190,7 +220,7 @@ class GraphService:
             return {"question": question, "cypher": None,
                     "results": [], "count": 0, "error": f"LLM failed: {e}"}
 
-        print(f"\U0001f50d FINAL CYPHER:\n{cypher}")
+        print(f"🔍 FINAL CYPHER:\n{cypher}")
 
         if re.search(r"\b(CREATE|MERGE|DELETE|DETACH|SET|REMOVE|DROP)\b",
                      cypher, re.IGNORECASE):
@@ -198,16 +228,17 @@ class GraphService:
                     "error": "Write operations are not allowed in queries."}
 
         try:
-            with self.driver.session() as session:
+            with self._session() as session:
                 rows = session.run(cypher).data()
-            print(f"\u2705 NL query returned {len(rows)} results")
+            print(f"✅ NL query returned {len(rows)} results")
             return {"question": question, "cypher": cypher,
                     "results": rows[:limit], "count": len(rows), "error": None}
         except Exception as e:
-            print(f"\u26a0\ufe0f Cypher execution failed: {e}")
+            print(f"⚠️ Cypher execution failed: {e}")
             return {"question": question, "cypher": cypher,
                     "results": [], "count": 0, "error": str(e)}
 
+    # ─────────────────────────────────────────────────────────────────────────
     def _extract_cypher(self, text: str) -> str:
         text = re.sub(r"```(?:cypher|sql)?", "", text).replace("```", "").strip()
         match = re.search(r"(MATCH\b.*)", text, re.DOTALL | re.IGNORECASE)
@@ -244,5 +275,5 @@ class GraphService:
             cypher = re.sub(r'\bRETURN\b', f"WHERE {where_clause}\nRETURN",
                             cypher, count=1, flags=re.IGNORECASE)
 
-        print(f"\U0001f527 Fixed name-filter for: {[m[1] for m in matches]}")
+        print(f"🔧 Fixed name-filter for: {[m[1] for m in matches]}")
         return cypher
