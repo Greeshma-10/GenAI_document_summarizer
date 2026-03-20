@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import time
 import tempfile
 import os
@@ -17,7 +17,7 @@ from v2.pipelines.summarization.semantic_section_builder import build_semantic_s
 from v2.pipelines.summarization.document_assembler import assemble_document
 
 # Evaluation
-from v2.pipelines.evaluation.meaning_evaluator import compute_meaning_coverage
+#from v2.pipelines.evaluation.meaning_evaluator import compute_meaning_coverage
 
 # Entity extraction
 from v2.pipelines.entity_extraction.entity_extractor import extract_entities
@@ -28,9 +28,13 @@ from v2.graph.relation_extractor import RelationExtractor
 from v2.graph.graph_builder import GraphBuilder
 from v2.pipelines.graph_pipeline import run_graph_pipeline
 from v2.graph.graph_service import GraphService
+from v2.graph.fact_verifier import FactVerifier
 
-# Utilities — flatten_entities now returns the dict as-is (not a flat list)
+# Utilities
 from v2.graph.entity_utils import flatten_entities
+
+from v2.pipelines.evaluation.meaning_evaluator import run_full_evaluation
+from typing import Optional, List, Dict
 
 
 app = FastAPI(
@@ -39,12 +43,35 @@ app = FastAPI(
 )
 
 graph_service = GraphService()
+fact_verifier = FactVerifier(graph_service)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Request models
+# ─────────────────────────────────────────────────────────────────────────────
 class NLQueryRequest(BaseModel):
     question: str
     limit: int = 20
 
+class FactCheckRequest(BaseModel):
+    claim: str
+    source_text: Optional[str] = ""
+
+class BatchFactCheckRequest(BaseModel):
+    claims: List[str]
+    source_text: Optional[str] = ""
+
+
+class EvaluationRequest(BaseModel):
+    # Required
+    section_summaries:      List[dict]
+    executive_summary:      str
+    extracted_entities:     Dict[str, List[str]]
+    # Optional
+    source_text:            Optional[str] = ""
+    reference_entities:     Optional[Dict[str, List[str]]] = None
+    max_claims:             int = 15
+ 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HEALTH
@@ -135,8 +162,6 @@ async def summarize(
     )
 
     # ── ENTITY EXTRACTION ────────────────────────────────────────────────────
-    # Run extraction over ALL section summaries (not just the last one)
-    # and merge results into a single categorized dict
     merged_entities: dict = {}
     for sec in section_summaries:
         sec_text = sec.get("section_summary", "")
@@ -148,12 +173,9 @@ async def summarize(
                 merged_entities[category] = []
             merged_entities[category].extend(values)
 
-    # Deduplicate within each category
     for category in merged_entities:
         merged_entities[category] = list(dict.fromkeys(merged_entities[category]))
 
-    # flatten_entities cleans/filters — returns same dict structure
-    # relation_extractor needs { "models": [...], "organizations": [...], ... }
     entity_dict = flatten_entities(merged_entities)
 
     # ── KNOWLEDGE GRAPH ───────────────────────────────────────────────────────
@@ -178,16 +200,16 @@ async def summarize(
     total_time = round(time.time() - total_start, 2)
 
     response = final_output.model_dump()
-    response["entities"] = merged_entities       # return full categorized dict
+    response["entities"] = merged_entities
     response["graph"] = {"triples_inserted": len(all_triples)}
     response["performance"] = {
-        "ingestion_time_sec":            ingestion_time,
-        "chunking_time_sec":             chunking_time,
-        "chunk_summarization_time_sec":  chunk_time,
-        "section_build_time_sec":        section_build_time,
+        "ingestion_time_sec":             ingestion_time,
+        "chunking_time_sec":              chunking_time,
+        "chunk_summarization_time_sec":   chunk_time,
+        "section_build_time_sec":         section_build_time,
         "section_summarization_time_sec": section_time,
-        "executive_time_sec":            executive_time,
-        "total_time_sec":                total_time,
+        "executive_time_sec":             executive_time,
+        "total_time_sec":                 total_time,
     }
     response["document_summary"]["meaning_coverage_score"] = meaning_score
     response["document_summary"]["mode_used"] = document_mode
@@ -329,3 +351,116 @@ def query_natural_language(request: NLQueryRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FACT VERIFICATION — single claim
+# ─────────────────────────────────────────────────────────────────────────────
+@app.post("/fact/verify")
+def verify_fact(request: FactCheckRequest):
+    """
+    Verify a single claim against the knowledge graph and source text.
+
+    Returns verdict: SUPPORTED | CONTRADICTED | UNVERIFIED
+
+    Example:
+      {
+        "claim": "The Transformer was developed by Google Brain",
+        "source_text": "..."
+      }
+    """
+    if not request.claim.strip():
+        raise HTTPException(status_code=400, detail="Claim cannot be empty")
+    try:
+        result = fact_verifier.verify(request.claim, request.source_text or "")
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FACT VERIFICATION — batch
+# ─────────────────────────────────────────────────────────────────────────────
+@app.post("/fact/verify/batch")
+def verify_facts_batch(request: BatchFactCheckRequest):
+    """
+    Verify multiple claims at once.
+
+    Example:
+      {
+        "claims": [
+          "The Transformer was developed by Google Brain",
+          "BLEU is used to evaluate translation",
+          "The Transformer uses convolutional layers"
+        ],
+        "source_text": "..."
+      }
+    """
+    if not request.claims:
+        raise HTTPException(status_code=400, detail="Claims list cannot be empty")
+    try:
+        results = fact_verifier.verify_batch(
+            request.claims, request.source_text or ""
+        )
+        supported    = sum(1 for r in results if r["verdict"] == "SUPPORTED")
+        contradicted = sum(1 for r in results if r["verdict"] == "CONTRADICTED")
+        unverified   = sum(1 for r in results if r["verdict"] == "UNVERIFIED")
+        return {
+            "total":        len(results),
+            "supported":    supported,
+            "contradicted": contradicted,
+            "unverified":   unverified,
+            "results":      results,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    # 3. Add this endpoint:
+ 
+@app.post("/evaluate")
+def evaluate(request: EvaluationRequest):
+    """
+    Run full evaluation on a processed document.
+ 
+    Computes:
+      - coverage_score     : semantic similarity, executive vs sections (0-100)
+      - factual_accuracy   : % of claims supported by knowledge graph (0-100)
+      - entity_accuracy    : entity extraction quality (precision/recall/F1
+                             if reference provided, else self-consistency score)
+ 
+    Minimal example (no reference entities):
+      {
+        "section_summaries": [
+          {"section_summary": "The Transformer was developed by Google Brain..."}
+        ],
+        "executive_summary": "The Transformer architecture introduced by Google Brain...",
+        "extracted_entities": {
+          "models": ["Transformer"],
+          "organizations": ["Google Brain"],
+          "metrics": ["BLEU"]
+        }
+      }
+ 
+    With reference entities (for precision/recall):
+      {
+        ...,
+        "reference_entities": {
+          "models": ["Transformer", "BERT"],
+          "organizations": ["Google Brain"]
+        }
+      }
+    """
+    try:
+        result = run_full_evaluation(
+            section_summaries=request.section_summaries,
+            executive_summary_text=request.executive_summary,
+            extracted_entities=request.extracted_entities,
+            fact_verifier=fact_verifier,
+            source_text=request.source_text or "",
+            reference_entities=request.reference_entities,
+            max_claims=request.max_claims,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+ 
