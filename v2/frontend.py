@@ -176,8 +176,8 @@ st.markdown(
 st.markdown("---")
 
 # ── TABS ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📄  Summarize", "🕸  Graph", "🔍  Query", "✅  Fact Check", "📊  Evaluate",
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📄  Summarize", "🕸  Graph", "🔍  Query", "✅  Fact Check", "📊  Evaluate", "🧲  Search",
 ])
 
 
@@ -710,3 +710,42 @@ with tab5:
                     st.error("Evaluation timed out — try reducing Max claims to verify.")
                 except Exception as e:
                     st.error(str(e))
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 6 — SEMANTIC SEARCH
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab6:
+    st.markdown('<p class="step-pill">STEP 06 · SEMANTIC SEARCH</p>',
+                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="card-amber">Upload and summarize a document first — '
+        'chunks are automatically indexed in Pinecone.</div>',
+        unsafe_allow_html=True
+    )
+
+    search_q = st.text_input(
+        "Search query",
+        placeholder="How does IoT help in agriculture?",
+        label_visibility="collapsed"
+    )
+    top_k = st.slider("Number of results", 1, 10, 5)
+
+    if st.button("Search", use_container_width=True, key="semantic_search") and search_q:
+        with st.spinner("Searching..."):
+            try:
+                resp = requests.get(
+                    f"{BASE_URL}/search",
+                    params={"query": search_q, "top_k": top_k}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    st.markdown(f"**{data.get('count', 0)} relevant chunks found**")
+                    for i, chunk in enumerate(data.get("results", []), 1):
+                        with st.expander(f"Result {i}"):
+                            st.write(chunk)
+                elif resp.status_code == 503:
+                    st.error("Vector store unavailable — check PINECONE_API_KEY in .env")
+                else:
+                    st.error(f"Error: {resp.text}")
+            except Exception as e:
+                st.error(str(e))

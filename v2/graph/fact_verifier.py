@@ -91,8 +91,9 @@ Return ONLY valid JSON — no explanation, no markdown, no backticks:
 
 class FactVerifier:
 
-    def __init__(self, graph_service, model_name: str = "llama3"):
+    def __init__(self,graph_service,vector_store=None,model_name: str = "llama3"):
         self.graph_service = graph_service
+        self.vector_store   = vector_store
         self.llm = OllamaLLM(model=model_name)
         self.claim_prompt  = CLAIM_PARSE_PROMPT
         self.verdict_prompt = VERDICT_PROMPT
@@ -216,32 +217,41 @@ class FactVerifier:
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 3 — find relevant sentences in source text
     # ─────────────────────────────────────────────────────────────────────────
-    def _get_text_evidence(self, claim: str, source_text: str) -> List[str]:
+    def _get_text_evidence(self, claim: str, source_text: str) -> list:
         """
-        Find sentences in source_text that contain keywords from the claim.
-        Returns up to 5 most relevant sentences.
+        Find relevant text evidence for a claim.
+ 
+        Priority:
+          1. Pinecone semantic search (if vector_store available)
+          2. Keyword fallback (if no vector store or search fails)
         """
+        # ── Option 1: Pinecone semantic search ───────────────────────────────
+        if self.vector_store:
+            try:
+                results = self.vector_store.search(claim, top_k=5)
+                if results:
+                    print(f"   🔍 Pinecone: {len(results)} semantic matches")
+                    return results
+            except Exception as e:
+                print(f"   ⚠️ Pinecone search failed, falling back to keyword: {e}")
+ 
+        # ── Option 2: keyword fallback ────────────────────────────────────────
         if not source_text:
             return []
-
-        # Keywords: all words > 3 chars from the claim
-        keywords = [
-            w.lower() for w in re.findall(r'\b\w{4,}\b', claim)
-        ]
-
-        sentences = re.split(r'(?<=[.!?])\s+', source_text)
-        scored = []
-
+ 
+        import re
+        keywords  = [w.lower() for w in re.findall(r'\b\w{4,}\b', claim)]
+        sentences = re.split(r'(?<=[.!?])\s+', source_text.strip())
+        scored    = []
+ 
         for sentence in sentences:
             s_lower = sentence.lower()
-            score = sum(1 for kw in keywords if kw in s_lower)
+            score   = sum(1 for kw in keywords if kw in s_lower)
             if score > 0:
                 scored.append((score, sentence.strip()))
-
-        # Return top 5 by keyword overlap
+ 
         scored.sort(reverse=True)
         return [s for _, s in scored[:5]]
-
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 4 — LLM judges verdict
     # ─────────────────────────────────────────────────────────────────────────
