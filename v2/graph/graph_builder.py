@@ -10,78 +10,57 @@ from typing import List
 from dotenv import load_dotenv
 
 from v2.graph.schema import Triple
+from v2.logging_config import get_logger
 
-# Load environment variables
 load_dotenv()
+
+logger = get_logger(__name__)
 
 
 class GraphBuilder:
 
     def __init__(self):
-
-        uri = os.getenv("NEO4J_URI")
+        uri      = os.getenv("NEO4J_URI")
         username = os.getenv("NEO4J_USER")
         password = os.getenv("NEO4J_PASSWORD")
 
-        # 🔍 DEBUG PRINTS
-        print("\n🔗 DEBUG Neo4j Config:")
-        print("URI:", uri)
-        print("USER:", username)
-        print("PASSWORD SET:", "YES" if password else "NO")
+        logger.debug("Neo4j config | URI=%s | USER=%s | PASSWORD=%s",
+                     uri, username, "SET" if password else "NOT SET")
 
         if not uri:
-            print("❌ ERROR: NEO4J_URI is not loaded from .env")
+            logger.error("NEO4J_URI is not set in environment")
 
-        # Initialize driver
         try:
-            self.driver = GraphDatabase.driver(
-                uri,
-                auth=(username, password)
-            )
-            print("✅ Driver initialized")
-
-        except Exception as e:
-            print("❌ Driver init failed:", str(e))
+            self.driver = GraphDatabase.driver(uri, auth=(username, password))
+            logger.info("Neo4j driver initialized")
+        except Exception:
+            logger.exception("Neo4j driver initialization failed")
             raise
 
-        # 🔍 TEST CONNECTION
         try:
             with self.driver.session() as session:
                 session.run("RETURN 1")
-                print("✅ Neo4j connection successful")
-
-        except Exception as e:
-            print("❌ Connection failed:", str(e))
+            logger.info("Neo4j connection successful")
+        except Exception:
+            logger.exception("Neo4j connection test failed")
 
     def close(self):
         self.driver.close()
 
-    # -------------------------------------
-    # CLEAR GRAPH
-    # -------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     def clear_graph(self):
-        """
-        Delete all nodes and relationships from the graph
-        """
-        print("🧹 Clearing graph...")
+        logger.info("Clearing graph")
         with self.driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n")
 
-    # -------------------------------------
-    # INSERT TRIPLES
-    # -------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     def insert_triples(self, triples: List[Triple]):
-        """
-        Insert triples into Neo4j
-        """
-
-        print(f"📥 Inserting {len(triples)} triples...")
+        logger.info("Inserting %d triples into Neo4j", len(triples))
 
         with self.driver.session() as session:
-
             for i, triple in enumerate(triples):
-                print(f"➡️ Triple {i+1}: {triple.subject} -[{triple.relation}]-> {triple.object}")
-
+                logger.debug("Triple %d: %s -[%s]-> %s",
+                             i + 1, triple.subject, triple.relation, triple.object)
                 session.execute_write(
                     self._create_relationship,
                     triple.subject,
@@ -91,13 +70,11 @@ class GraphBuilder:
                     getattr(triple, "object_type", "Unknown")
                 )
 
-    # -------------------------------------
-    # CREATE RELATIONSHIP
-    # -------------------------------------
+        logger.info("Inserted %d triples into Neo4j", len(triples))
+
+    # ─────────────────────────────────────────────────────────────────────────
     @staticmethod
     def _create_relationship(tx, subject, relation, object_, subject_type, object_type):
-
-        # 🔒 Sanitize relation name (Neo4j safe)
         safe_relation = (
             relation.upper()
             .replace(" ", "_")

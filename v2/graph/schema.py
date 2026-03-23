@@ -28,7 +28,8 @@ RELATION_TYPES: List[str] = [
     "PART_OF",
     "SUPPORTS",
     "RELATED_TO",
-    "MENTIONS"
+    "MENTIONS",
+    "OUTPERFORMS"
 ]
 
 CATEGORY_TO_SCHEMA_TYPE = {

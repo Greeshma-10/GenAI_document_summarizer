@@ -1,8 +1,13 @@
 from typing import List, Dict
-from v1.config import settings
-from v1.logger import logger
-from v1.prompts.section import build_section_prompt
-from v1.services.bedrock_service import invoke_llm
+from v2.config import settings
+from v2.logging_config import get_logger
+from v2.prompts.section import build_section_prompt
+from v2.services.bedrock_service import invoke_llm
+
+
+logger = get_logger(__name__)
+
+
 
 # PUBLIC 
 

@@ -2,95 +2,99 @@
 Vector Store Service — Pinecone
 
 Handles:
-  1. index_chunks()   — embed and store document chunks in Pinecone
-  2. search()         — semantic search for relevant chunks given a query
-  3. delete_all()     — clear the index for a new document
+  1. index_chunks()     — embed and store document chunks in Pinecone
+  2. search()           — semantic search for relevant chunks given a query
+  3. delete_document()  — remove all chunks for a specific document
+  4. delete_all()       — clear the entire index
 """
 
-import os
 import hashlib
-from typing import List, Dict, Optional
+import re
+from typing import List, Optional
+
 from pinecone import Pinecone, ServerlessSpec
+
 from v1.services.bedrock_service import get_embedding
+from v2.config import settings
+from v2.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+# Non-Pinecone constants that don't belong in config
+UPSERT_BATCH_SIZE          = 100
+METADATA_CHAR_LIMIT        = 3000
+METADATA_CHAR_MIN_FALLBACK = 500
+MIN_CHUNK_TEXT_LEN         = 80
+MAX_SENTENCES_PER_CHUNK    = 8
+MIN_SENTENCE_LEN           = 30
+MATH_SYMBOLS               = set('=∈∑→×·≤≥∗∝∂√∀∃∩∪⊂⊃±∞')
 
 
-
+# ─────────────────────────────────────────────────────────────────────────────
 def _clean_chunk_text(text: str) -> str:
     """
-    Clean PDF chunk and split into readable sentences.
-    Returns text with sentences separated by newlines for bullet display.
+    Clean a raw PDF chunk and split it into readable sentences.
+    Returns newline-separated sentences for bullet display, or empty string
+    if the result is too short to be useful.
     """
-    import re as _re
+    text = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
+    text = re.sub(r'\[\d+(?:,\s*\d+)*\]', '', text)
 
-    # Fix broken hyphenated words e.g. "convolu-\ntional" → "convolutional"
-    text = _re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
-
-    # Remove citation numbers like [1], [12], [4, 5]
-    text = _re.sub(r'\[\d+(?:,\s*\d+)*\]', '', text)
-
-    # Remove math formula lines — skip lines with 2+ math symbols
-    MATH_SYMBOLS = set('=∈∑→×·≤≥∗∝∂√∀∃∩∪⊂⊃±∞')
-    lines = text.split('\n')
     clean_lines = []
-    for line in lines:
+    for line in text.split('\n'):
         stripped = line.strip()
         if not stripped:
             continue
-        math_count = sum(1 for c in stripped if c in MATH_SYMBOLS)
-        if math_count >= 2:
+        if sum(1 for c in stripped if c in MATH_SYMBOLS) >= 2:
+            logger.debug("Skipping math line: %s", stripped[:60])
             continue
-        # Skip page numbers and figure captions
-        if _re.match(r'^\d+\s*$', stripped):
+        if re.match(r'^\d+\s*$', stripped):
             continue
-        if _re.match(r'^(Figure|Table|Fig\.)\s*\d+', stripped):
+        if re.match(r'^(Figure|Table|Fig\.)\s*\d+', stripped):
             continue
         if len(stripped) < 15:
             continue
         clean_lines.append(stripped)
 
     text = ' '.join(clean_lines)
+    text = re.sub(r'\s{2,}', ' ', text)
+    text = re.sub(r'\[\s*\]', '', text).strip()
 
-    # Normalize whitespace
-    text = _re.sub(r'\s{2,}', ' ', text)
-    text = _re.sub(r'\[\s*\]', '', text)
-    text = text.strip()
-
-    if len(text) < 80:
+    if len(text) < MIN_CHUNK_TEXT_LEN:
+        logger.debug("Chunk too short after cleaning (%d chars), discarding", len(text))
         return ""
 
-    # Split into sentences for bullet-point display
-    sentences = _re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 30]
+    sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > MIN_SENTENCE_LEN]
 
-    # Return as newline-separated sentences (frontend renders as bullets)
-    return '\n'.join(sentences[:8])  # max 8 sentences per chunk
+    return '\n'.join(sentences[:MAX_SENTENCES_PER_CHUNK])
 
 
+# ─────────────────────────────────────────────────────────────────────────────
 class VectorStore:
 
-    def __init__(self):
-        api_key    = os.getenv("PINECONE_API_KEY")
-        index_name = os.getenv("PINECONE_INDEX", "docmind")
+    def __init__(self, api_key: Optional[str] = None, index_name: Optional[str] = None):
+        api_key    = api_key    or settings.PINECONE_API_KEY
+        index_name = index_name or settings.PINECONE_INDEX
 
         if not api_key:
-            raise ValueError("PINECONE_API_KEY not set in environment")
+            raise ValueError("Pinecone API key must be provided or set via PINECONE_API_KEY")
 
         self.pc         = Pinecone(api_key=api_key)
         self.index_name = index_name
 
-        # Create index if it doesn't exist
         existing = [i.name for i in self.pc.list_indexes()]
         if index_name not in existing:
-            print(f"📌 Creating Pinecone index '{index_name}'...")
+            logger.info("Creating Pinecone index '%s'", index_name)
             self.pc.create_index(
                 name=index_name,
-                dimension=1024,
-                metric="cosine",
-                spec=ServerlessSpec(cloud="aws", region="us-east-1")
+                dimension=settings.PINECONE_DIMENSION,
+                metric=settings.PINECONE_METRIC,
+                spec=ServerlessSpec(cloud="aws", region=settings.AWS_REGION),
             )
-            print(f"✅ Index '{index_name}' created")
+            logger.info("Pinecone index '%s' created", index_name)
         else:
-            print(f"✅ Pinecone index '{index_name}' ready")
+            logger.info("Pinecone index '%s' is ready", index_name)
 
         self.index = self.pc.Index(index_name)
 
@@ -98,11 +102,10 @@ class VectorStore:
     def index_chunks(self, chunks: List[str], doc_id: str = "default") -> int:
         """
         Embed and upsert chunks into Pinecone.
-        Each chunk gets a unique ID based on doc_id + position.
-
-        Returns number of chunks indexed.
+        Returns number of chunks successfully indexed.
         """
         if not chunks:
+            logger.warning("index_chunks called with empty chunk list | doc_id='%s'", doc_id)
             return 0
 
         vectors = []
@@ -110,56 +113,54 @@ class VectorStore:
             if not chunk.strip():
                 continue
             try:
-                # Clean chunk — remove excessive whitespace, normalize line breaks
                 clean_chunk = " ".join(chunk.split())
 
-                # Pinecone metadata limit is 40KB — cap at 3000 chars to be safe
-                # but keep whole sentences
-                if len(clean_chunk) > 3000:
-                    # truncate at last sentence boundary before 3000 chars
-                    truncated = clean_chunk[:3000]
+                if len(clean_chunk) > METADATA_CHAR_LIMIT:
+                    truncated   = clean_chunk[:METADATA_CHAR_LIMIT]
                     last_period = max(
                         truncated.rfind(". "),
                         truncated.rfind("! "),
-                        truncated.rfind("? ")
+                        truncated.rfind("? "),
                     )
-                    if last_period > 500:
-                        clean_chunk = truncated[:last_period + 1]
-                    else:
-                        clean_chunk = truncated
+                    clean_chunk = (
+                        truncated[:last_period + 1]
+                        if last_period > METADATA_CHAR_MIN_FALLBACK
+                        else truncated
+                    )
+                    logger.debug("Chunk %d truncated to %d chars", i, len(clean_chunk))
 
-                embedding = get_embedding(chunk)   # embed original, store cleaned
-                chunk_id  = f"{doc_id}_chunk_{i}"
+                embedding = get_embedding(chunk)
                 vectors.append({
-                    "id":     chunk_id,
+                    "id":     f"{doc_id}_chunk_{i}",
                     "values": embedding,
                     "metadata": {
                         "doc_id":    doc_id,
                         "chunk_idx": i,
-                        "text":      clean_chunk
-                    }
+                        "text":      clean_chunk,
+                    },
                 })
-            except Exception as e:
-                print(f"⚠️ Failed to embed chunk {i}: {e}")
+            except Exception:
+                logger.exception("Failed to embed chunk %d | doc_id='%s'", i, doc_id)
                 continue
 
         if not vectors:
+            logger.warning("No valid vectors produced | doc_id='%s'", doc_id)
             return 0
 
-        # Upsert in batches of 100
-        batch_size = 100
-        for i in range(0, len(vectors), batch_size):
-            batch = vectors[i:i + batch_size]
+        for batch_start in range(0, len(vectors), UPSERT_BATCH_SIZE):
+            batch     = vectors[batch_start:batch_start + UPSERT_BATCH_SIZE]
+            batch_num = batch_start // UPSERT_BATCH_SIZE + 1
             self.index.upsert(vectors=batch)
-            print(f"📥 Pinecone: upserted {len(batch)} chunks (batch {i//batch_size + 1})")
+            logger.info("Upserted %d chunks (batch %d) | doc_id='%s'",
+                        len(batch), batch_num, doc_id)
 
-        print(f"✅ Indexed {len(vectors)} chunks for doc_id='{doc_id}'")
+        logger.info("Indexed %d chunks | doc_id='%s'", len(vectors), doc_id)
         return len(vectors)
 
     # ─────────────────────────────────────────────────────────────────────────
     def search(self, query: str, top_k: int = 5, doc_id: Optional[str] = None) -> List[str]:
         """
-        Semantic search — find the most relevant chunks for a query.
+        Semantic search — return the most relevant chunks for a query.
 
         Args:
             query:  the search query (e.g. a claim to verify)
@@ -167,15 +168,16 @@ class VectorStore:
             doc_id: if provided, filter to chunks from this document only
 
         Returns:
-            List of chunk text strings, most relevant first
+            List of chunk text strings, most relevant first.
         """
         if not query.strip():
+            logger.warning("search called with empty query")
             return []
 
         try:
             query_embedding = get_embedding(query)
-        except Exception as e:
-            print(f"⚠️ Failed to embed query: {e}")
+        except Exception:
+            logger.exception("Failed to embed query | query='%s'", query[:80])
             return []
 
         try:
@@ -185,48 +187,49 @@ class VectorStore:
                 vector=query_embedding,
                 top_k=top_k,
                 include_metadata=True,
-                filter=filter_dict
+                filter=filter_dict,
             )
 
-            chunks = []
-            for match in results.get("matches", []):
-                score = match.get("score", 0)
-                text  = match.get("metadata", {}).get("text", "")
-                if score > 0.3 and text:   # return reasonably similar chunks
-                    chunks.append(text)
+            chunks = [
+                match["metadata"]["text"]
+                for match in results.get("matches", [])
+                if match.get("score", 0) > settings.SIMILARITY_THRESHOLD
+                and match.get("metadata", {}).get("text")
+            ]
 
-            print(f"🔍 Pinecone search: {len(chunks)} relevant chunks "
-                  f"(score > 0.5) for query: '{query[:60]}...'")
+            logger.info(
+                "Search returned %d chunks (score > %.2f) | doc_id='%s' | query='%s'",
+                len(chunks), settings.SIMILARITY_THRESHOLD, doc_id, query[:60],
+            )
             return chunks
 
-        except Exception as e:
-            print(f"⚠️ Pinecone search failed: {e}")
+        except Exception:
+            logger.exception("Pinecone search failed | query='%s'", query[:80])
             return []
 
     # ─────────────────────────────────────────────────────────────────────────
-    def delete_document(self, doc_id: str):
-        """Delete all chunks for a specific document."""
+    def delete_document(self, doc_id: str) -> None:
+        """Delete all chunks belonging to a specific document."""
         try:
             self.index.delete(filter={"doc_id": {"$eq": doc_id}})
-            print(f"🗑️ Deleted all chunks for doc_id='{doc_id}'")
+            logger.info("Deleted all chunks | doc_id='%s'", doc_id)
         except Exception as e:
-            # 404 just means index is empty — not an error
             if "Namespace not found" in str(e) or "404" in str(e):
-                print(f"ℹ️ No existing chunks for doc_id='{doc_id}' (index empty)")
+                logger.info("No existing chunks to delete | doc_id='%s'", doc_id)
             else:
-                print(f"⚠️ Failed to delete chunks for '{doc_id}': {e}")
+                logger.exception("Failed to delete chunks | doc_id='%s'", doc_id)
 
     # ─────────────────────────────────────────────────────────────────────────
-    def delete_all(self):
-        """Clear the entire index."""
+    def delete_all(self) -> None:
+        """Clear the entire Pinecone index."""
         try:
             self.index.delete(delete_all=True)
-            print("🗑️ Pinecone index cleared")
-        except Exception as e:
-            print(f"⚠️ Failed to clear index: {e}")
+            logger.info("Pinecone index '%s' cleared", self.index_name)
+        except Exception:
+            logger.exception("Failed to clear Pinecone index '%s'", self.index_name)
 
     # ─────────────────────────────────────────────────────────────────────────
     @staticmethod
     def make_doc_id(filename: str) -> str:
-        """Generate a stable doc_id from a filename."""
+        """Generate a stable 12-character doc_id from a filename."""
         return hashlib.md5(filename.encode()).hexdigest()[:12]

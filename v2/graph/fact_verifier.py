@@ -1,138 +1,61 @@
 """
-Fact Verification Module
+Fact Verification Module — Production Version
 
-Given a claim (string), verifies it against:
-  1. The Neo4j knowledge graph (structured evidence)
-  2. The source text via keyword search (unstructured evidence)
-
-Returns:
-  verdict:  SUPPORTED | CONTRADICTED | UNVERIFIED
-  evidence: list of supporting/contradicting triples or text snippets
-  score:    0.0 - 1.0 confidence
+Uses:
+- Centralized prompts from v2.prompts.fact_verification
+- Structured logging via v2.config.logging_config
+- No hardcoded prompts, no emojis, no print()
 """
 
 import re
+import json
+from collections import defaultdict
 from typing import List, Dict, Optional
+
 from langchain_ollama import OllamaLLM
-from langchain_core.prompts import PromptTemplate
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Prompt: extract a structured claim from free text
-# ─────────────────────────────────────────────────────────────────────────────
-CLAIM_PARSE_PROMPT = PromptTemplate(
-    input_variables=["claim"],
-    template="""
-Extract the subject, relation, and object from this claim.
-
-Claim: {claim}
-
-Return ONLY valid JSON — no explanation, no markdown:
-{{"subject": "...", "relation": "...", "object": "..."}}
-"""
+from v2.prompts.fact_verification import (
+    build_fact_verification_prompt,
+    build_claim_extraction_prompt,
 )
+from v2.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Prompt: judge verdict given evidence
-# ─────────────────────────────────────────────────────────────────────────────
-VERDICT_PROMPT = PromptTemplate(
-    input_variables=["claim", "graph_evidence", "text_evidence"],
-    template="""
-You are a strict fact-checking system. Analyse the claim against the evidence and return a verdict.
-
-Claim: {claim}
-
-Graph evidence (structured knowledge graph triples):
-{graph_evidence}
-
-Text evidence (sentences from source document):
-{text_evidence}
-
-Verdict rules — follow these exactly:
-
-CONTRADICTED — use this when:
-  - The claim names entity X but the graph shows a DIFFERENT entity Y for the same relation
-    e.g. claim says "developed by OpenAI" but graph shows DEVELOPED_BY -> Google Brain → CONTRADICTED
-  - The claim says the subject USES something but the graph shows it uses something completely different
-    e.g. claim says "uses convolutional layers" but graph shows USES -> self-attention → CONTRADICTED
-  - The claim names an organization or person that does NOT appear anywhere in the evidence
-    but a DIFFERENT organization/person appears for the same role → CONTRADICTED
-
-SUPPORTED — use this when:
-  - The graph contains a triple that directly matches the claim's subject, relation, and object
-  - e.g. claim "Transformer uses self-attention" and graph has (Transformer)-[USES]->(self-attention) → SUPPORTED
-
-UNVERIFIED — use this ONLY when:
-  - There is genuinely no relevant evidence at all (graph and text are both empty or unrelated)
-  - Do NOT use UNVERIFIED when contradicting evidence exists
-
-Examples:
-  Claim: "Transformer was developed by OpenAI"
-  Graph: (Transformer)-[DEVELOPED_BY]->(Google Brain)
-  → CONTRADICTED — graph shows Google Brain, not OpenAI
-
-  Claim: "Transformer uses recurrent neural networks"
-  Graph: (Transformer)-[USES]->(self-attention), (Transformer)-[USES]->(Multi-Head Attention)
-  → CONTRADICTED — graph shows attention mechanisms, not recurrent networks
-
-  Claim: "Transformer was developed by Google Brain"
-  Graph: (Transformer)-[DEVELOPED_BY]->(Google Brain)
-  → SUPPORTED
-
-Return ONLY valid JSON — no explanation, no markdown, no backticks:
-{{
-  "verdict": "SUPPORTED",
-  "reason": "one sentence explanation referencing specific evidence",
-  "confidence": 0.0
-}}
-"""
-)
+RELATION_KEYWORDS = {
+    "developed_by":  ["developed by", "created by", "built by"],
+    "proposed_by":   ["proposed by", "introduced by", "presented by"],
+    "uses":          ["uses", "use", "using", "employs", "based on"],
+    "trained_on":    ["trained on", "fine-tuned on"],
+    "evaluated_on":  ["evaluated on", "tested on", "measured on"],
+    "applied_to":    ["applied to", "used for"],
+}
 
 
 class FactVerifier:
 
-    def __init__(self,graph_service,vector_store=None,model_name: str = "llama3"):
-        self.graph_service = graph_service
+    def __init__(self, graph_service, vector_store=None, model_name: str = "llama3"):
+        self.graph_service  = graph_service
         self.vector_store   = vector_store
-        self.llm = OllamaLLM(model=model_name)
-        self.claim_prompt  = CLAIM_PARSE_PROMPT
-        self.verdict_prompt = VERDICT_PROMPT
+        self.llm            = OllamaLLM(model=model_name)
+        logger.info("FactVerifier initialized | vector_store=%s",
+                    "Pinecone" if vector_store else "keyword fallback")
 
     # ─────────────────────────────────────────────────────────────────────────
     def verify(self, claim: str, source_text: str = "") -> dict:
-        """
-        Main entry point.
+        logger.info("Verifying claim: %s", claim)
 
-        Args:
-            claim:       the statement to verify e.g. "Transformer was developed by Google Brain"
-            source_text: original document text for unstructured search (optional)
+        entities       = self._extract_claim_entities(claim)
+        logger.debug("Entities extracted: %s", entities)
 
-        Returns:
-            {
-              "claim":          str,
-              "verdict":        "SUPPORTED" | "CONTRADICTED" | "UNVERIFIED",
-              "reason":         str,
-              "confidence":     float,
-              "graph_evidence": list[dict],
-              "text_evidence":  list[str],
-            }
-        """
-        print(f"\n🔍 VERIFYING: {claim}")
-
-        # Step 1: extract entities from the claim for graph lookup
-        entities = self._extract_claim_entities(claim)
-        print(f"   Entities extracted: {entities}")
-
-        # Step 2: query graph for evidence
         graph_evidence = self._get_graph_evidence(entities)
-        print(f"   Graph evidence: {len(graph_evidence)} triples")
+        logger.debug("Graph evidence: %d triples", len(graph_evidence))
 
-        # Step 3: search source text for evidence
-        text_evidence = self._get_text_evidence(claim, source_text)
-        print(f"   Text evidence: {len(text_evidence)} snippets")
+        text_evidence  = self._get_text_evidence(claim, source_text)
+        logger.debug("Text evidence: %d snippets", len(text_evidence))
 
-        # Step 4: LLM judges the verdict
-        verdict_data = self._judge_verdict(claim, graph_evidence, text_evidence)
+        verdict_data   = self._judge_verdict(claim, graph_evidence, text_evidence)
 
         return {
             "claim":          claim,
@@ -145,21 +68,20 @@ class FactVerifier:
 
     # ─────────────────────────────────────────────────────────────────────────
     def verify_batch(self, claims: List[str], source_text: str = "") -> List[dict]:
-        """Verify multiple claims at once."""
         return [self.verify(claim, source_text) for claim in claims]
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 1 — extract key entity names from the claim
+    # STEP 1 — extract entity names from the claim
     # ─────────────────────────────────────────────────────────────────────────
     def _extract_claim_entities(self, claim: str) -> List[str]:
-        """
-        Extract subject + object entity names from the claim
-        using the LLM, then fall back to simple noun extraction.
-        """
+        # Use a simple inline prompt for claim parsing (not in prompts file —
+        # it's a micro-extraction, not a configurable prompt)
         try:
-            raw = self.llm.invoke(self.claim_prompt.format(claim=claim))
-            raw = re.sub(r"```(?:json)?|```", "", str(raw)).strip()
-            import json
+            raw = self.llm.invoke(
+                f'Extract subject and object from: "{claim}"\n'
+                f'Return ONLY JSON: {{"subject": "...", "object": "..."}}'
+            )
+            raw    = re.sub(r"```(?:json)?|```", "", str(raw)).strip()
             parsed = json.loads(raw)
             entities = []
             for key in ("subject", "object"):
@@ -168,33 +90,26 @@ class FactVerifier:
                     entities.append(val)
             return entities
         except Exception:
-            # Fallback: split claim into words, take capitalized ones
+            logger.debug("Entity extraction fallback for claim: %s", claim)
             words = re.findall(r'\b[A-Z][a-zA-Z0-9\-]+(?:\s+[A-Z][a-zA-Z0-9\-]+)*', claim)
-            return list(dict.fromkeys(words))  # dedup preserving order
+            return list(dict.fromkeys(words))
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 2 — query the graph for relevant triples
+    # STEP 2 — query graph for relevant triples
     # ─────────────────────────────────────────────────────────────────────────
     def _get_graph_evidence(self, entities: List[str]) -> List[dict]:
-        """
-        Get all triples involving any of the extracted entities.
-        Also tries partial/keyword matches when exact entity lookup returns nothing.
-        """
         evidence = []
-        seen = set()
+        seen     = set()
 
         for entity in entities:
             try:
-                result = self.graph_service.query(
-                    "neighbours", entity=entity, limit=15
-                )
-                rows = result.get("results", [])
+                result = self.graph_service.query("neighbours", entity=entity, limit=15)
+                rows   = result.get("results", [])
 
-                # If exact match found nothing, try each word in entity name
-                # e.g. "recurrent neural networks" → try "recurrent"
+                # Partial word match fallback for multi-word entities
                 if not rows and len(entity.split()) > 1:
                     for word in entity.split():
-                        if len(word) > 4:   # skip short words
+                        if len(word) > 4:
                             try:
                                 fallback = self.graph_service.query(
                                     "neighbours", entity=word, limit=10
@@ -209,49 +124,42 @@ class FactVerifier:
                         seen.add(key)
                         evidence.append(row)
 
-            except Exception as e:
-                print(f"   ⚠️ Graph query failed for '{entity}': {e}")
+            except Exception:
+                logger.warning("Graph query failed for entity: %s", entity)
 
         return evidence
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 3 — find relevant sentences in source text
+    # STEP 3 — find relevant text evidence
     # ─────────────────────────────────────────────────────────────────────────
     def _get_text_evidence(self, claim: str, source_text: str) -> list:
-        """
-        Find relevant text evidence for a claim.
- 
-        Priority:
-          1. Pinecone semantic search (if vector_store available)
-          2. Keyword fallback (if no vector store or search fails)
-        """
-        # ── Option 1: Pinecone semantic search ───────────────────────────────
+        # Priority 1: Pinecone semantic search
         if self.vector_store:
             try:
                 results = self.vector_store.search(claim, top_k=5)
                 if results:
-                    print(f"   🔍 Pinecone: {len(results)} semantic matches")
+                    logger.debug("Pinecone: %d semantic matches", len(results))
                     return results
-            except Exception as e:
-                print(f"   ⚠️ Pinecone search failed, falling back to keyword: {e}")
- 
-        # ── Option 2: keyword fallback ────────────────────────────────────────
+            except Exception:
+                logger.warning("Pinecone search failed, falling back to keyword", exc_info=True)
+
+        # Priority 2: keyword fallback
         if not source_text:
             return []
- 
-        import re
+
         keywords  = [w.lower() for w in re.findall(r'\b\w{4,}\b', claim)]
         sentences = re.split(r'(?<=[.!?])\s+', source_text.strip())
         scored    = []
- 
+
         for sentence in sentences:
             s_lower = sentence.lower()
             score   = sum(1 for kw in keywords if kw in s_lower)
             if score > 0:
                 scored.append((score, sentence.strip()))
- 
+
         scored.sort(reverse=True)
         return [s for _, s in scored[:5]]
+
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 4 — LLM judges verdict
     # ─────────────────────────────────────────────────────────────────────────
@@ -261,89 +169,57 @@ class FactVerifier:
         graph_evidence: List[dict],
         text_evidence: List[str]
     ) -> dict:
-        """Ask the LLM to judge SUPPORTED / CONTRADICTED / UNVERIFIED."""
+
+        if not graph_evidence and not text_evidence:
+            return {
+                "verdict":    "UNVERIFIED",
+                "reason":     "No evidence found in graph or source text.",
+                "confidence": 0.0
+            }
+
+        # Pre-LLM rule check — skip LLM for high-confidence rule results
+        rule_result = self._rule_based_verdict(claim, graph_evidence)
+        if rule_result["verdict"] == "CONTRADICTED" and rule_result["confidence"] >= 0.75:
+            logger.debug("Rule-based CONTRADICTED (skipping LLM)")
+            return rule_result
+        if rule_result["verdict"] == "SUPPORTED" and rule_result["confidence"] >= 0.8:
+            logger.debug("Rule-based SUPPORTED (skipping LLM)")
+            return rule_result
 
         # Format evidence for prompt
-        if graph_evidence:
-            graph_str = "\n".join(
-                f"  ({r['source']}) -[{r['relation']}]-> ({r['target']})"
-                for r in graph_evidence[:10]
-            )
-        else:
-            graph_str = "  (no graph evidence found)"
+        graph_str = "\n".join(
+            f"  ({r['source']}) -[{r['relation']}]-> ({r['target']})"
+            for r in graph_evidence[:10]
+        ) if graph_evidence else "  (no graph evidence found)"
 
         text_str = "\n".join(
             f"  - {s}" for s in text_evidence[:5]
         ) if text_evidence else "  (no text evidence found)"
 
-        # If no evidence at all, skip LLM call
-        if not graph_evidence and not text_evidence:
-            return {
-                "verdict": "UNVERIFIED",
-                "reason": "No evidence found in graph or source text.",
-                "confidence": 0.0
-            }
-
-        # ── Pre-LLM rule check ────────────────────────────────────────────
-        # Run rule-based check first — if it gives a high-confidence answer
-        # trust it and skip the LLM (avoids hallucination on clear cases)
-        rule_result = self._rule_based_verdict(claim, graph_evidence)
-        if rule_result["verdict"] == "CONTRADICTED" and rule_result["confidence"] >= 0.75:
-            print(f"   ⚡ Rule-based CONTRADICTED (skipping LLM)")
-            return rule_result
-        if rule_result["verdict"] == "SUPPORTED" and rule_result["confidence"] >= 0.8:
-            print(f"   ⚡ Rule-based SUPPORTED (skipping LLM)")
-            return rule_result
+        # Use centralized prompt — no hardcoding here
+        prompt = build_fact_verification_prompt(claim, graph_str, text_str)
 
         try:
-            raw = self.llm.invoke(self.verdict_prompt.format(
-                claim=claim,
-                graph_evidence=graph_str,
-                text_evidence=text_str
-            ))
-            raw = re.sub(r"```(?:json)?|```", "", str(raw)).strip()
-
-            import json
+            raw    = self.llm.invoke(prompt)
+            raw    = re.sub(r"```(?:json)?|```", "", str(raw)).strip()
             result = json.loads(raw)
 
-            # Validate verdict value
             if result.get("verdict") not in ("SUPPORTED", "CONTRADICTED", "UNVERIFIED"):
                 result["verdict"] = "UNVERIFIED"
 
             result["confidence"] = float(result.get("confidence", 0.5))
             return result
 
-        except Exception as e:
-            print(f"   ⚠️ Verdict LLM failed: {e}")
-            # Rule-based fallback: if graph has matching triple, mark supported
+        except Exception:
+            logger.warning("Verdict LLM failed, falling back to rule-based", exc_info=True)
             return self._rule_based_verdict(claim, graph_evidence)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Fallback: rule-based verdict from graph triples alone
+    # Rule-based verdict fallback
     # ─────────────────────────────────────────────────────────────────────────
     def _rule_based_verdict(self, claim: str, graph_evidence: List[dict]) -> dict:
-        """
-        Rule-based verdict using keyword matching.
-
-        SUPPORTED    — subject AND object both appear in claim AND a graph triple
-        CONTRADICTED — subject appears in claim, graph has a triple with the SAME
-                       relation keyword but a DIFFERENT object
-        UNVERIFIED   — no relevant match found
-        """
         claim_lower = claim.lower()
 
-        # Relation keyword → canonical relation name mapping
-        RELATION_KEYWORDS = {
-            "developed_by":  ["developed by", "created by", "built by"],
-            "proposed_by":   ["proposed by", "introduced by", "presented by"],
-            "uses":          ["uses", "use", "using", "employs", "based on"],
-            "trained_on":    ["trained on", "fine-tuned on"],
-            "evaluated_on":  ["evaluated on", "tested on", "measured on"],
-            "applied_to":    ["applied to", "used for"],
-        }
-
-        from collections import defaultdict
-        # Group graph triples by (normalised_source, relation)
         rel_map = defaultdict(list)
         for triple in graph_evidence:
             src = triple.get("source", "").lower()
@@ -351,17 +227,13 @@ class FactVerifier:
             tgt = triple.get("target", "").lower()
             rel_map[(src, rel)].append((tgt, triple))
 
-        # Extract the claim subject — the first noun phrase before the relation verb
-        # e.g. "BLEU was developed by Google Brain" → subject is "bleu"
-        # e.g. "The Transformer uses RNNs" → subject is "transformer"
+        # Extract claim subject — text before the relation phrase
         claim_subject = None
         for rel_name, phrases in RELATION_KEYWORDS.items():
             for phrase in phrases:
                 if phrase in claim_lower:
-                    # Subject is everything before the relation phrase
-                    idx = claim_lower.index(phrase)
+                    idx         = claim_lower.index(phrase)
                     raw_subject = claim_lower[:idx].strip().rstrip("was is are").strip()
-                    # Remove leading articles
                     for article in ("the ", "a ", "an "):
                         if raw_subject.startswith(article):
                             raw_subject = raw_subject[len(article):]
@@ -372,8 +244,7 @@ class FactVerifier:
 
         for (src, rel), targets in rel_map.items():
 
-            # Only match triples whose source is the SUBJECT of the claim
-            # not just any entity mentioned anywhere in the claim
+            # Only match triples where source matches claim subject
             if claim_subject:
                 if claim_subject not in src and src not in claim_subject:
                     continue
@@ -382,33 +253,27 @@ class FactVerifier:
                     continue
 
             for tgt, triple in targets:
-                # SUPPORTED — object also appears in claim
                 if tgt in claim_lower:
                     return {
-                        "verdict": "SUPPORTED",
-                        "reason": (
+                        "verdict":    "SUPPORTED",
+                        "reason":     (
                             f"Graph confirms: ({triple['source']}) "
                             f"-[{triple['relation']}]-> ({triple['target']})"
                         ),
                         "confidence": 0.8
                     }
 
-            # CONTRADICTED — only fire if:
-            # 1. claim contains a keyword for THIS specific relation
-            # 2. graph object is NOT in the claim
-            relation_phrases = RELATION_KEYWORDS.get(rel, [])
-            claim_mentions_this_relation = any(
-                phrase in claim_lower for phrase in relation_phrases
-            )
+            relation_phrases       = RELATION_KEYWORDS.get(rel, [])
+            claim_mentions_rel     = any(p in claim_lower for p in relation_phrases)
 
-            if claim_mentions_this_relation:
+            if claim_mentions_rel:
                 for tgt, triple in targets:
-                    tgt_words = set(tgt.split())
+                    tgt_words   = set(tgt.split())
                     claim_words = set(claim_lower.split())
                     if not tgt_words & claim_words:
                         return {
-                            "verdict": "CONTRADICTED",
-                            "reason": (
+                            "verdict":    "CONTRADICTED",
+                            "reason":     (
                                 f"Graph shows ({triple['source']}) -[{triple['relation']}]-> "
                                 f"({triple['target']}), which conflicts with the claim."
                             ),
@@ -416,7 +281,7 @@ class FactVerifier:
                         }
 
         return {
-            "verdict": "UNVERIFIED",
-            "reason": "Could not match claim to any graph triple.",
+            "verdict":    "UNVERIFIED",
+            "reason":     "Could not match claim to any graph triple.",
             "confidence": 0.0
         }

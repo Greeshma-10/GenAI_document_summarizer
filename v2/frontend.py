@@ -360,6 +360,16 @@ with tab2:
                                          params={"type":"by_type","entity_type":entity_type,"limit":30})
                     if resp.status_code == 200:
                         data = resp.json()
+
+                        # ✅ Added modification
+                        st.session_state.graph_built = True
+                        if data.get("entities"):
+                            st.session_state.entities = data["entities"]
+                        st.success(
+                            f"Graph built — {data.get('num_relations', 0)} triples, "
+                            f"{data.get('num_entities', 0)} entities"
+                        )
+
                         st.markdown(f"**{data.get('count',0)} {entity_type} entities**")
                         for ent in data.get("entities", []):
                             with st.expander(ent["entity"]):
@@ -393,6 +403,16 @@ with tab2:
                                                  "depth":depth,"limit":50})
                     if resp.status_code == 200:
                         data = resp.json()
+
+                        # ✅ Added modification
+                        st.session_state.graph_built = True
+                        if data.get("entities"):
+                            st.session_state.entities = data["entities"]
+                        st.success(
+                            f"Graph built — {data.get('num_relations', 0)} triples, "
+                            f"{data.get('num_entities', 0)} entities"
+                        )
+
                         c1, c2 = st.columns(2)
                         c1.metric("Nodes", data.get("node_count", 0))
                         c2.metric("Edges", data.get("edge_count", 0))
@@ -408,7 +428,6 @@ with tab2:
                         st.error(resp.text)
                 except Exception as e:
                     st.error(str(e))
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — QUERY
