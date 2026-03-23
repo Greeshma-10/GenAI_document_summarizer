@@ -14,6 +14,58 @@ from pinecone import Pinecone, ServerlessSpec
 from v1.services.bedrock_service import get_embedding
 
 
+
+def _clean_chunk_text(text: str) -> str:
+    """
+    Clean PDF chunk and split into readable sentences.
+    Returns text with sentences separated by newlines for bullet display.
+    """
+    import re as _re
+
+    # Fix broken hyphenated words e.g. "convolu-\ntional" → "convolutional"
+    text = _re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
+
+    # Remove citation numbers like [1], [12], [4, 5]
+    text = _re.sub(r'\[\d+(?:,\s*\d+)*\]', '', text)
+
+    # Remove math formula lines — skip lines with 2+ math symbols
+    MATH_SYMBOLS = set('=∈∑→×·≤≥∗∝∂√∀∃∩∪⊂⊃±∞')
+    lines = text.split('\n')
+    clean_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        math_count = sum(1 for c in stripped if c in MATH_SYMBOLS)
+        if math_count >= 2:
+            continue
+        # Skip page numbers and figure captions
+        if _re.match(r'^\d+\s*$', stripped):
+            continue
+        if _re.match(r'^(Figure|Table|Fig\.)\s*\d+', stripped):
+            continue
+        if len(stripped) < 15:
+            continue
+        clean_lines.append(stripped)
+
+    text = ' '.join(clean_lines)
+
+    # Normalize whitespace
+    text = _re.sub(r'\s{2,}', ' ', text)
+    text = _re.sub(r'\[\s*\]', '', text)
+    text = text.strip()
+
+    if len(text) < 80:
+        return ""
+
+    # Split into sentences for bullet-point display
+    sentences = _re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 30]
+
+    # Return as newline-separated sentences (frontend renders as bullets)
+    return '\n'.join(sentences[:8])  # max 8 sentences per chunk
+
+
 class VectorStore:
 
     def __init__(self):
@@ -140,7 +192,7 @@ class VectorStore:
             for match in results.get("matches", []):
                 score = match.get("score", 0)
                 text  = match.get("metadata", {}).get("text", "")
-                if score > 0.4 and text:   # return reasonably similar chunks
+                if score > 0.3 and text:   # return reasonably similar chunks
                     chunks.append(text)
 
             print(f"🔍 Pinecone search: {len(chunks)} relevant chunks "

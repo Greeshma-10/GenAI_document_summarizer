@@ -4,6 +4,7 @@ Graph Service — two query methods:
   2. query_nl()  — natural language → Cypher → results
 
 Connection: keep-alive + auto-reconnect on stale connections
+Fix: subgraph depth inlined (Neo4j doesn't allow $param in path length)
 """
 
 import os
@@ -74,20 +75,16 @@ class GraphService:
         return GraphDatabase.driver(
             self._uri,
             auth=self._auth,
-            max_connection_lifetime=3600,       # recreate connections after 1hr
+            max_connection_lifetime=3600,
             max_connection_pool_size=10,
             connection_acquisition_timeout=60,
-            keep_alive=True                     # keep TCP connection alive
+            keep_alive=True
         )
 
     def _session(self):
-        """
-        Return a session, auto-reconnecting if the driver has gone stale.
-        Use this instead of self.driver.session() everywhere.
-        """
+        """Return a session, auto-reconnecting if the driver has gone stale."""
         try:
-            session = self.driver.session()
-            return session
+            return self.driver.session()
         except Exception:
             print("🔄 Neo4j connection stale — reconnecting...")
             try:
@@ -179,15 +176,19 @@ class GraphService:
                 entity = kwargs["entity"]
                 depth  = min(kwargs.get("depth", 2), 4)
                 limit  = kwargs.get("limit", 50)
-                rows = session.run("""
-                    MATCH path = (e:Entity)-[*1..$depth]-(n)
+
+                # ← FIX: Neo4j does not allow $param in variable-length path
+                # bounds like [*1..$depth]. Must inline the integer value directly.
+                query = f"""
+                    MATCH path = (e:Entity)-[*1..{depth}]-(n)
                     WHERE toLower(e.name) = toLower($entity)
                     UNWIND relationships(path) AS r
                     WITH startNode(r) AS src, type(r) AS rel, endNode(r) AS tgt
                     RETURN DISTINCT src.name AS source, src.type AS source_type,
                            rel AS relation, tgt.name AS target, tgt.type AS target_type
                     LIMIT $limit
-                """, entity=entity, depth=depth, limit=limit).data()
+                """
+                rows = session.run(query, entity=entity, limit=limit).data()
 
                 nodes, edges = {}, []
                 for row in rows:

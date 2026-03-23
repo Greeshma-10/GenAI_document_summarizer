@@ -1,21 +1,21 @@
 """
-Relation Extraction Module - Final Version
+Relation Extraction Module — Bedrock Version
 
-Fixes:
-✔ USED_IN and TRAINED_ON now in RELATION_TYPES (schema fix)
-✔ Metric triples auto-flipped: METRIC→MODEL becomes MODEL→METRIC via EVALUATED_ON
-✔ Relation upgrader covers all meaningful type pairs
-✔ Robust JSON parsing
+Changes from Ollama version:
+✔ Uses AWS Bedrock (meta.llama3-8b-instruct-v1:0) instead of local Ollama
+✔ Faster and more accurate than local LLaMA
+✔ Uses same bedrock_service pattern as entity_extractor
+✔ All existing fixes preserved (flip rules, upgrade, dedup, filters)
 """
 
 import json
 import re
+import boto3
 from typing import List, Dict, Optional
 
-from langchain_core.prompts import PromptTemplate
-from langchain_ollama import OllamaLLM
-
 from v2.graph.schema import Triple, RELATION_TYPES, CATEGORY_TO_SCHEMA_TYPE
+# RELATION_TYPES used as preferred list only — LLM may define new types
+from v2.config import settings
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -37,27 +37,13 @@ PREFERRED_RELATION: Dict[tuple, str] = {
 
 WEAK_RELATIONS = {"RELATED_TO", "MENTIONS"}
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Triples where subject/object should be FLIPPED for correctness
-# e.g. LLM says  BLEU -[EVALUATED_ON]-> Transformer
-#      but it should be  Transformer -[EVALUATED_ON]-> BLEU
-# ─────────────────────────────────────────────────────────────────────────────
 FLIP_RULES: Dict[tuple, str] = {
-    # (subject_type, object_type, relation) → flip and use this relation
     ("METRIC", "MODEL", "EVALUATED_ON"): "EVALUATED_ON",
     ("METRIC", "MODEL", "USED_FOR"):     "EVALUATED_ON",
     ("DATASET","MODEL", "TRAINED_ON"):   "TRAINED_ON",
 }
 
-
-class RelationExtractor:
-
-    def __init__(self, model_name: str = "llama3"):
-        self.llm = OllamaLLM(model=model_name)
-
-        self.prompt = PromptTemplate(
-            input_variables=["text", "entities", "relations"],
-            template="""
+PROMPT_TEMPLATE = """
 You are a precise knowledge graph extraction system for scientific papers.
 
 Extract factual relationships between the listed entities from the text.
@@ -68,33 +54,78 @@ Text:
 Entities (Name — Type):
 {entities}
 
-Allowed Relationships:
-{relations}
+PREFERRED relations (use these when they fit):
+- DEVELOPED_BY   : model/tool created by an organization or person
+- PROPOSED_BY    : model/concept introduced/proposed by an organization
+- TRAINED_ON     : model trained using a dataset
+- EVALUATED_ON   : model tested/benchmarked on a metric or dataset
+- APPLIED_TO     : model/method used for a task
+- USES           : model/system uses a concept/mechanism
+- USED_IN        : concept/technique used inside a model/system
+- USED_FOR       : metric/dataset used for a specific purpose
+- PART_OF        : component that belongs to a larger system
+- OUTPERFORMS    : model achieves better results than another model
+- COMPARED_TO    : model explicitly compared against another model
+- RELATED_TO     : general relationship when nothing specific fits
 
-Relation guide — use the MOST SPECIFIC relation for the entity types:
-- MODEL  → ORGANIZATION  : DEVELOPED_BY
-- MODEL  → DATASET       : TRAINED_ON
-- MODEL  → METRIC        : EVALUATED_ON
-- MODEL  → TASK          : APPLIED_TO
-- MODEL  → CONCEPT       : USES
-- CONCEPT → MODEL        : USED_IN
-- METRIC → MODEL or TASK : USED_FOR
-- ORGANIZATION → MODEL   : PROPOSED_BY
-- Use RELATED_TO ONLY when no specific relation fits
+You MAY define a NEW relation type if none of the above fits and the relationship
+is clearly stated in the text. Use UPPERCASE_WITH_UNDERSCORES format.
+Examples of valid new relations: INTRODUCES, REPLACES, EXTENDS, IMPROVES_UPON
+
+Special rules for tables and results:
+- "Transformer (big) 28.4 BLEU EN-DE" → subject: Transformer (big), relation: EVALUATED_ON, object: BLEU
+- Model comparison rows → extract EVALUATED_ON for each model/metric pair
+- "X outperforms Y" → subject: X, relation: OUTPERFORMS, object: Y
+- Training data mentioned → extract TRAINED_ON
 
 Rules:
 - Only extract relationships explicitly stated or strongly implied in the text
-- Do NOT invent relationships
-- Do NOT use RELATED_TO when a specific relation fits
-- Skip obvious/generic triples (e.g. Transformer RELATED_TO classification)
-- Return a single valid JSON array, nothing else — no explanation, no markdown
+- Do NOT invent relationships that are not in the text
+- Be specific — prefer EVALUATED_ON over RELATED_TO for metrics
+- Skip generic or obvious triples
+- Return ONLY a valid JSON array, no explanation, no markdown
 
-Output:
+Output format:
 [
   {{"subject": "Entity1", "relation": "RELATION", "object": "Entity2"}}
 ]
 """
+
+
+class RelationExtractor:
+
+    def __init__(self):
+        self.client = boto3.client(
+            "bedrock-runtime",
+            region_name=settings.AWS_REGION,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
         )
+        self.model_id = settings.LLM_MODEL_ID
+        print(f"✅ RelationExtractor using Bedrock: {self.model_id}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    def _invoke_bedrock(self, prompt: str) -> str:
+        """Call Bedrock LLaMA3 and return the text response."""
+        body = {
+            "prompt": prompt,
+            "max_gen_len": 1024,
+            "temperature": 0.0,
+            "top_p": 0.9,
+        }
+        try:
+            response = self.client.invoke_model(
+                modelId=self.model_id,
+                body=json.dumps(body),
+                contentType="application/json",
+                accept="application/json",
+            )
+            result = json.loads(response["body"].read())
+            # LLaMA3 on Bedrock returns generation field
+            return result.get("generation", result.get("outputs", [{}])[0].get("text", ""))
+        except Exception as e:
+            print(f"⚠️ Bedrock invocation failed: {e}")
+            return ""
 
     # ─────────────────────────────────────────────────────────────────────────
     def _clean_json(self, text: str) -> Optional[str]:
@@ -143,7 +174,6 @@ Output:
 
     # ─────────────────────────────────────────────────────────────────────────
     def _upgrade_relation(self, relation: str, subject_type: str, object_type: str) -> str:
-        """Upgrade weak RELATED_TO/MENTIONS to a specific relation where possible."""
         if relation in WEAK_RELATIONS:
             preferred = PREFERRED_RELATION.get((subject_type, object_type))
             if preferred:
@@ -152,22 +182,12 @@ Output:
         return relation
 
     # ─────────────────────────────────────────────────────────────────────────
-    def _maybe_flip(
-        self,
-        subject: str, relation: str, obj: str,
-        subject_type: str, object_type: str
-    ):
-        """
-        Flip subject/object when the LLM has the direction backwards.
-        e.g.  BLEU -[EVALUATED_ON]-> Transformer
-              becomes  Transformer -[EVALUATED_ON]-> BLEU
-        Returns (subject, relation, object, subject_type, object_type)
-        """
+    def _maybe_flip(self, subject, relation, obj, subject_type, object_type):
         flip_relation = FLIP_RULES.get((subject_type, object_type, relation))
         if flip_relation:
             print(f"   🔄 Flipped: ({subject}:{subject_type}) -[{relation}]-> "
-                  f"({obj}:{object_type})  →  ({obj}:{object_type}) -[{flip_relation}]-> "
-                  f"({subject}:{subject_type})")
+                  f"({obj}:{object_type})  →  ({obj}:{object_type}) "
+                  f"-[{flip_relation}]-> ({subject}:{subject_type})")
             return obj, flip_relation, subject, object_type, subject_type
         return subject, relation, obj, subject_type, object_type
 
@@ -177,12 +197,12 @@ Output:
         if not entities:
             return []
 
-        entity_type_map: Dict[str, str] = self._build_entity_type_map(entities)
+        entity_type_map = self._build_entity_type_map(entities)
         if not entity_type_map:
             print("⚠️ No entities to extract relations from.")
             return []
 
-        normalized_to_canonical: Dict[str, str] = {
+        normalized_to_canonical = {
             self._normalize(k): k for k in entity_type_map
         }
 
@@ -190,20 +210,18 @@ Output:
             f"  {name} — {etype}" for name, etype in entity_type_map.items()
         )
 
-        formatted_prompt = self.prompt.format(
+        prompt = PROMPT_TEMPLATE.format(
             text=text,
-            entities=entities_with_types,
-            relations=", ".join(RELATION_TYPES)
+            entities=entities_with_types
         )
 
-        try:
-            response = self.llm.invoke(formatted_prompt)
-            response_text = str(response)
-        except Exception as e:
-            print(f"⚠️ LLM invocation failed: {e}")
+        response_text = self._invoke_bedrock(prompt)
+
+        if not response_text:
+            print("⚠️ Empty response from Bedrock")
             return []
 
-        print("\n🔗 RELATION LLM RESPONSE:\n", response_text)
+        print("\n🔗 RELATION BEDROCK RESPONSE:\n", response_text[:500])
 
         json_text = self._clean_json(response_text)
         if not json_text:
@@ -224,8 +242,8 @@ Output:
             return []
 
         GARBAGE_OBJECTS = {"models", "evaluation", "systems", "the authors", "authors"}
-        seen = set()   # deduplicate triples
-        triples: List[Triple] = []
+        seen    = set()
+        triples = []
 
         for item in triples_json:
             try:
@@ -278,12 +296,31 @@ Output:
                     print(f"   ⏭ Skipping: invalid relation '{relation}'")
                     continue
 
-                # Step 4: drop MODEL RELATED_TO TASK (too generic)
+                # Step 4: drop MODEL RELATED_TO TASK
                 if relation == "RELATED_TO" and subject_type == "MODEL" and object_type == "TASK":
                     print(f"   ⏭ Skipping: MODEL RELATED_TO TASK is too generic")
                     continue
 
-                # Step 5: deduplicate
+                # Step 5: drop self-loops
+                if subject_canonical.lower() == obj_canonical.lower():
+                    print(f"   ⏭ Skipping: self-loop")
+                    continue
+
+                # Step 6: DEVELOPED_BY / PROPOSED_BY object must be ORGANIZATION
+                if relation in {"DEVELOPED_BY", "PROPOSED_BY"}:
+                    obj_type_check = entity_type_map.get(obj_canonical, "Unknown")
+                    if obj_type_check not in {"ORGANIZATION", "Unknown"}:
+                        print(f"   ⏭ Skipping: {relation} object '{obj_canonical}' "
+                              f"is {obj_type_check}, not ORGANIZATION")
+                        continue
+
+                # Step 7: drop publication names as subjects
+                if re.search(r'\[|\bJournal\b|\bInternational\b|\bConference\b',
+                             subject_canonical, re.IGNORECASE):
+                    print(f"   ⏭ Skipping: subject looks like a publication")
+                    continue
+
+                # Step 8: deduplicate
                 key = (subject_canonical, relation, obj_canonical)
                 if key in seen:
                     print(f"   ⏭ Skipping: duplicate triple")

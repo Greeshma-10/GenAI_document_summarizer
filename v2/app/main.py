@@ -4,6 +4,7 @@ from typing import Optional, List, Dict
 import time
 import tempfile
 import os
+import re as _re
 
 # Ingestion
 from v2.ingestion.document_parser import parse_document
@@ -34,6 +35,7 @@ from v2.graph.vector_store import VectorStore
 
 # Utilities
 from v2.graph.entity_utils import flatten_entities
+from v2.graph.schema import CATEGORY_TO_SCHEMA_TYPE
 
 
 app = FastAPI(
@@ -76,6 +78,52 @@ class EvaluationRequest(BaseModel):
     max_claims:          int = 15
 
 
+# ── DEDUP HELPER (shared by summarize + graph build) ─────────────────────────
+_INVERSE_PAIRS         = {"USES": "USED_IN", "USED_IN": "USES"}
+_SUBJECT_MUST_BE_TYPED = {
+    "DEVELOPED_BY", "PROPOSED_BY", "TRAINED_ON",
+    "EVALUATED_ON", "APPLIED_TO", "PART_OF"
+}
+
+def _dedup_triples(all_triples, type_map):
+    seen_keys      = set()
+    unique_triples = []
+    for t in all_triples:
+        subj = t.subject.strip()
+        obj  = t.object.strip()
+        rel  = t.relation
+
+        key = (subj.lower(), rel, obj.lower())
+        if key in seen_keys:
+            continue
+
+        inverse_rel = _INVERSE_PAIRS.get(rel)
+        if inverse_rel:
+            if (obj.lower(), inverse_rel, subj.lower()) in seen_keys:
+                seen_keys.add(key)
+                continue
+
+        if rel in _SUBJECT_MUST_BE_TYPED:
+            if subj.lower() not in type_map:
+                continue
+
+        if subj.lower() == obj.lower():
+            continue
+
+        if rel in {"DEVELOPED_BY", "PROPOSED_BY"}:
+            obj_type = type_map.get(obj.lower(), "Unknown")
+            if obj_type not in {"ORGANIZATION", "Unknown"}:
+                continue
+
+        if _re.search(r'\[|\bJournal\b|\bInternational\b|\bConference\b',
+                      subj, _re.IGNORECASE):
+            continue
+
+        seen_keys.add(key)
+        unique_triples.append(t)
+    return unique_triples
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HEALTH
 # ─────────────────────────────────────────────────────────────────────────────
@@ -105,7 +153,7 @@ async def summarize(
         tmp.write(content)
         temp_path = tmp.name
 
-    document_data = parse_document(temp_path)
+    document_data  = parse_document(temp_path)
     ingestion_time = round(time.time() - ingestion_start, 2)
 
     combined_text = (
@@ -115,10 +163,10 @@ async def summarize(
 
     # CHUNKING
     chunking_start = time.time()
-    chunks = chunk_text(combined_text)
-    chunking_time = round(time.time() - chunking_start, 2)
+    chunks         = chunk_text(combined_text)
+    chunking_time  = round(time.time() - chunking_start, 2)
 
-    # INDEX CHUNKS IN PINECONE
+    # INDEX ALL CHUNKS IN PINECONE
     if vector_store:
         try:
             doc_id = VectorStore.make_doc_id(file.filename)
@@ -129,17 +177,17 @@ async def summarize(
             print(f"⚠️ Pinecone indexing failed: {e}")
 
     # CHUNK SUMMARIZATION
-    chunk_start = time.time()
+    chunk_start     = time.time()
     chunk_summaries = summarize_chunks(chunks, mode=document_mode)
-    chunk_time = round(time.time() - chunk_start, 2)
+    chunk_time      = round(time.time() - chunk_start, 2)
 
     # SEMANTIC SECTION BUILDING
     section_build_start = time.time()
-    semantic_sections = build_semantic_sections(chunk_summaries)
-    section_build_time = round(time.time() - section_build_start, 2)
+    semantic_sections   = build_semantic_sections(chunk_summaries)
+    section_build_time  = round(time.time() - section_build_start, 2)
 
     # SECTION SUMMARIZATION
-    section_start    = time.time()
+    section_start     = time.time()
     section_summaries = []
     for section in semantic_sections:
         section_summary = summarize_section(
@@ -161,8 +209,7 @@ async def summarize(
         print("⚠️ Executive generation failed:", str(e))
         executive_summary = {
             "executive_summary": "Executive summary failed.",
-            "key_points": [],
-            "risks_action_items": [],
+            "key_points": [], "risks_action_items": [],
             "tldr": "Executive TLDR unavailable."
         }
     executive_time = round(time.time() - executive_start, 2)
@@ -179,7 +226,7 @@ async def summarize(
         executive_summary.get("executive_summary", "")
     )
 
-    # ENTITY EXTRACTION
+    # ENTITY EXTRACTION — from section summaries
     merged_entities: dict = {}
     for sec in section_summaries:
         sec_text = sec.get("section_summary", "")
@@ -196,18 +243,10 @@ async def summarize(
 
     entity_dict = flatten_entities(merged_entities)
 
-    # KNOWLEDGE GRAPH
-    from v2.graph.schema import CATEGORY_TO_SCHEMA_TYPE
-
+    # KNOWLEDGE GRAPH — from section summaries via Bedrock
     relation_extractor = RelationExtractor()
     graph_builder      = GraphBuilder()
     all_triples        = []
-
-    _INVERSE_PAIRS         = {"USES": "USED_IN", "USED_IN": "USES"}
-    _SUBJECT_MUST_BE_TYPED = {
-        "DEVELOPED_BY", "PROPOSED_BY", "TRAINED_ON",
-        "EVALUATED_ON", "APPLIED_TO", "PART_OF"
-    }
 
     type_map = {}
     for category, values in entity_dict.items():
@@ -222,49 +261,7 @@ async def summarize(
         triples = relation_extractor.extract_relations(sec_text, entity_dict)
         all_triples.extend(triples)
 
-    # Deduplicate — exact + inverse + subject type validation + noise filters
-    import re as _re
-    seen_keys      = set()
-    unique_triples = []
-
-    for t in all_triples:
-        subj = t.subject.strip()
-        obj  = t.object.strip()
-        rel  = t.relation
-
-        key = (subj.lower(), rel, obj.lower())
-        if key in seen_keys:
-            continue
-
-        # Drop inverse duplicates
-        inverse_rel = _INVERSE_PAIRS.get(rel)
-        if inverse_rel:
-            if (obj.lower(), inverse_rel, subj.lower()) in seen_keys:
-                seen_keys.add(key)
-                continue
-
-        # Subject must be typed entity for structural relations
-        if rel in _SUBJECT_MUST_BE_TYPED:
-            if subj.lower() not in type_map:
-                continue
-
-        # Drop self-loops
-        if subj.lower() == obj.lower():
-            continue
-
-        # DEVELOPED_BY / PROPOSED_BY object must be ORGANIZATION
-        if rel in {"DEVELOPED_BY", "PROPOSED_BY"}:
-            obj_type = type_map.get(obj.lower(), "Unknown")
-            if obj_type not in {"ORGANIZATION", "Unknown"}:
-                continue
-
-        # Drop publication/journal names as subjects
-        if _re.search(r'\[|\bJournal\b|\bInternational\b|\bConference\b',
-                      subj, _re.IGNORECASE):
-            continue
-
-        seen_keys.add(key)
-        unique_triples.append(t)
+    unique_triples = _dedup_triples(all_triples, type_map)
 
     try:
         graph_builder.clear_graph()
@@ -335,10 +332,10 @@ async def build_graph_api(
         temp_path = tmp.name
 
     try:
-        # Index chunks in Pinecone before building graph
+        # Index ALL chunks in Pinecone
         if vector_store:
             try:
-                from v2.ingestion.document_parser import parse_document, build_document_text
+                from v2.ingestion.document_parser import build_document_text
                 parsed   = parse_document(temp_path)
                 raw_text = build_document_text(parsed)
                 chunks   = chunk_text(raw_text)
@@ -361,43 +358,37 @@ async def build_graph_api(
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/graph/query")
 def query_graph(
-    type:        str           = Query("neighbours", description="neighbours | path | by_type | subgraph"),
-    entity:      Optional[str] = Query(None, description="Entity name (neighbours / subgraph)"),
-    from_entity: Optional[str] = Query(None, alias="from", description="Start entity (path)"),
-    to_entity:   Optional[str] = Query(None, alias="to",   description="End entity (path)"),
-    entity_type: Optional[str] = Query(None, description="MODEL | DATASET | METRIC | ORGANIZATION | TASK | CONCEPT"),
-    depth:       int           = Query(2,    description="Hop depth for subgraph (1–4)"),
-    limit:       int           = Query(20,   description="Max results"),
+    type:        str           = Query("neighbours"),
+    entity:      Optional[str] = Query(None),
+    from_entity: Optional[str] = Query(None, alias="from"),
+    to_entity:   Optional[str] = Query(None, alias="to"),
+    entity_type: Optional[str] = Query(None),
+    depth:       int           = Query(2),
+    limit:       int           = Query(20),
 ):
     try:
         if type == "neighbours":
             if not entity:
                 raise HTTPException(status_code=400, detail="'entity' param required")
             return graph_service.query("neighbours", entity=entity, limit=limit)
-
         elif type == "path":
             if not from_entity or not to_entity:
                 raise HTTPException(status_code=400, detail="'from' and 'to' params required")
             return graph_service.query("path", from_entity=from_entity, to_entity=to_entity)
-
         elif type == "by_type":
             if not entity_type:
                 raise HTTPException(status_code=400, detail="'entity_type' param required")
-            valid = {"MODEL", "DATASET", "METRIC", "ORGANIZATION", "TASK", "CONCEPT"}
+            valid = {"MODEL","DATASET","METRIC","ORGANIZATION","TASK","CONCEPT"}
             if entity_type.upper() not in valid:
-                raise HTTPException(status_code=400,
-                                    detail=f"entity_type must be one of {valid}")
+                raise HTTPException(status_code=400, detail=f"entity_type must be one of {valid}")
             return graph_service.query("by_type", entity_type=entity_type, limit=limit)
-
         elif type == "subgraph":
             if not entity:
                 raise HTTPException(status_code=400, detail="'entity' param required")
             return graph_service.query("subgraph", entity=entity, depth=depth, limit=limit)
-
         else:
             raise HTTPException(status_code=400,
                                 detail="'type' must be: neighbours | path | by_type | subgraph")
-
     except HTTPException:
         raise
     except Exception as e:
@@ -430,8 +421,7 @@ def verify_fact(request: FactCheckRequest):
     if not request.claim.strip():
         raise HTTPException(status_code=400, detail="Claim cannot be empty")
     try:
-        result = fact_verifier.verify(request.claim, request.source_text or "")
-        return result
+        return fact_verifier.verify(request.claim, request.source_text or "")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -449,11 +439,9 @@ def verify_facts_batch(request: BatchFactCheckRequest):
         contradicted = sum(1 for r in results if r["verdict"] == "CONTRADICTED")
         unverified   = sum(1 for r in results if r["verdict"] == "UNVERIFIED")
         return {
-            "total":        len(results),
-            "supported":    supported,
-            "contradicted": contradicted,
-            "unverified":   unverified,
-            "results":      results,
+            "total": len(results), "supported": supported,
+            "contradicted": contradicted, "unverified": unverified,
+            "results": results,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -465,7 +453,7 @@ def verify_facts_batch(request: BatchFactCheckRequest):
 @app.post("/evaluate")
 def evaluate(request: EvaluationRequest):
     try:
-        result = run_full_evaluation(
+        return run_full_evaluation(
             section_summaries=request.section_summaries,
             executive_summary_text=request.executive_summary,
             extracted_entities=request.extracted_entities,
@@ -474,25 +462,18 @@ def evaluate(request: EvaluationRequest):
             reference_entities=request.reference_entities,
             max_claims=request.max_claims,
         )
-        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SEMANTIC SEARCH — search document chunks by meaning
+# SEMANTIC SEARCH
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/search")
 def semantic_search(
     query: str = Query(..., description="Natural language search query"),
     top_k: int = Query(5,   description="Number of results to return"),
 ):
-    """
-    Search indexed document chunks semantically.
-    Must upload a document first via /summarize or /graph/build.
-
-    Example: /search?query=How does IoT help in agriculture?
-    """
     if not vector_store:
         raise HTTPException(status_code=503,
                             detail="Vector store unavailable — check PINECONE_API_KEY")
@@ -500,10 +481,6 @@ def semantic_search(
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     try:
         results = vector_store.search(query, top_k=top_k)
-        return {
-            "query":   query,
-            "count":   len(results),
-            "results": results
-        }
+        return {"query": query, "count": len(results), "results": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

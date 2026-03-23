@@ -5,22 +5,18 @@ from v2.graph.relation_extractor import RelationExtractor
 from v2.graph.graph_builder import GraphBuilder
 
 
-MAX_CHUNKS = 10
+# MAX_CHUNKS removed — Bedrock is fast enough to process all chunks
 
 _GARBAGE = {
     "none", "model", "models", "organization", "organizations",
     "language modeling", "the authors", "authors", "unknown"
 }
 
-# Relations that are semantic inverses of each other
-# If (A)-[REL]->(B) exists, drop (B)-[INVERSE]->(A)
 _INVERSE_PAIRS = {
     "USES":    "USED_IN",
     "USED_IN": "USES",
 }
 
-# Relations where the subject must be a known typed entity (MODEL/ORG/DATASET/METRIC)
-# Prevents noise like "attention key and value dimensions -[PROPOSED_BY]-> ..."
 _SUBJECT_MUST_BE_TYPED = {
     "DEVELOPED_BY", "PROPOSED_BY", "TRAINED_ON",
     "EVALUATED_ON", "APPLIED_TO", "PART_OF"
@@ -32,19 +28,16 @@ def _is_garbage(value: str) -> bool:
 
 
 def _is_typed_entity(name: str, entity_type_map: dict) -> bool:
-    """Check if an entity name exists in the known typed entity map."""
     name_lower = name.lower().strip()
     for k in entity_type_map:
         if k.lower().strip() == name_lower:
             return True
-        # partial match
         if name_lower in k.lower() or k.lower() in name_lower:
             return True
     return False
 
 
 def _build_type_map(all_entities: dict) -> dict:
-    """Flat map of entity_name → type for quick lookup."""
     from v2.graph.schema import CATEGORY_TO_SCHEMA_TYPE
     result = {}
     for category, values in all_entities.items():
@@ -63,10 +56,9 @@ def run_graph_pipeline(file_path, mode="academic"):
     # ── CHUNKING ──────────────────────────────────────────────────────────────
     chunks = chunk_text(full_text)
     total  = len(chunks)
-    chunks = chunks[:MAX_CHUNKS]
-    print(f"📄 Processing {len(chunks)}/{total} chunks (MAX_CHUNKS={MAX_CHUNKS})")
+    print(f"📄 Processing all {total} chunks (Bedrock — no cap)")
 
-    # ── ENTITY EXTRACTION ─────────────────────────────────────────────────────
+    # ── ENTITY EXTRACTION — all chunks ───────────────────────────────────────
     all_entities = {
         "models": [], "datasets": [], "metrics": [],
         "organizations": [], "tasks": [], "key_concepts": []
@@ -74,12 +66,12 @@ def run_graph_pipeline(file_path, mode="academic"):
 
     for i, chunk in enumerate(chunks):
         chunk_entities = extract_entities(chunk, mode=mode)
-        print(f"🧪 Chunk {i+1}/{len(chunks)}: "
+        print(f"🧪 Chunk {i+1}/{total}: "
               f"{ {k: v for k, v in chunk_entities.items() if v} }")
         for key in all_entities:
             all_entities[key].extend(chunk_entities.get(key, []))
 
-    # Pass 2: org extraction from header
+    # Pass 2: dedicated org extraction from header
     org_result = extract_entities("\n\n".join(chunks[:2]), mode=mode)
     extra_orgs = org_result.get("organizations", [])
     if extra_orgs:
@@ -99,10 +91,9 @@ def run_graph_pipeline(file_path, mode="academic"):
         if values:
             print(f"  {key}: {values}")
 
-    # Build flat type map for subject validation
     type_map = _build_type_map(all_entities)
 
-    # ── RELATION EXTRACTION ───────────────────────────────────────────────────
+    # ── RELATION EXTRACTION — all chunks via Bedrock ──────────────────────────
     relation_extractor = RelationExtractor()
     all_triples = []
 
@@ -112,11 +103,12 @@ def run_graph_pipeline(file_path, mode="academic"):
             t for t in triples
             if not _is_garbage(t.object) and not _is_garbage(t.subject)
         ]
-        print(f"🔗 Chunk {i+1} → {len(clean)} triples")
+        print(f"🔗 Chunk {i+1}/{total} → {len(clean)} triples")
         all_triples.extend(clean)
 
     # ── DEDUPLICATION ─────────────────────────────────────────────────────────
-    seen_keys  = set()
+    import re as _re
+    seen_keys      = set()
     unique_triples = []
 
     for t in all_triples:
@@ -124,30 +116,39 @@ def run_graph_pipeline(file_path, mode="academic"):
         obj  = t.object.strip()
         rel  = t.relation
 
-        # 1. Skip exact duplicates
         key = (subj.lower(), rel, obj.lower())
         if key in seen_keys:
             continue
 
-        # 2. Skip semantic inverse duplicates
-        #    e.g. if (Transformer USES self-attention) already exists,
-        #    drop (self-attention USED_IN Transformer)
+        # Drop semantic inverse duplicates
         inverse_rel = _INVERSE_PAIRS.get(rel)
         if inverse_rel:
             inverse_key = (obj.lower(), inverse_rel, subj.lower())
             if inverse_key in seen_keys:
-                print(f"   🔁 Skipping inverse duplicate: "
-                      f"({subj}) -[{rel}]-> ({obj})")
-                seen_keys.add(key)   # mark so we don't add the forward either
+                print(f"   🔁 Skipping inverse duplicate: ({subj}) -[{rel}]-> ({obj})")
+                seen_keys.add(key)
                 continue
 
-        # 3. For structural relations, subject must be a known typed entity
-        #    Prevents noise like "attention key and value dimensions -[PROPOSED_BY]-> ..."
+        # Subject must be typed for structural relations
         if rel in _SUBJECT_MUST_BE_TYPED:
             if not _is_typed_entity(subj, type_map):
-                print(f"   ⏭ Skipping: subject '{subj}' not a typed entity "
-                      f"for relation {rel}")
+                print(f"   ⏭ Skipping: subject '{subj}' not a typed entity for {rel}")
                 continue
+
+        # Drop self-loops
+        if subj.lower() == obj.lower():
+            continue
+
+        # DEVELOPED_BY / PROPOSED_BY object must be ORGANIZATION
+        if rel in {"DEVELOPED_BY", "PROPOSED_BY"}:
+            obj_type = type_map.get(obj.lower(), "Unknown")
+            if obj_type not in {"ORGANIZATION", "Unknown"}:
+                continue
+
+        # Drop publication/journal names as subjects
+        if _re.search(r'\[|\bJournal\b|\bInternational\b|\bConference\b',
+                      subj, _re.IGNORECASE):
+            continue
 
         seen_keys.add(key)
         unique_triples.append(t)
@@ -169,6 +170,6 @@ def run_graph_pipeline(file_path, mode="academic"):
         "num_entities":     sum(len(v) for v in all_entities.values()),
         "num_relations":    len(unique_triples),
         "entities":         all_entities,
-        "chunks_processed": len(chunks),
+        "chunks_processed": total,
         "chunks_total":     total,
     }

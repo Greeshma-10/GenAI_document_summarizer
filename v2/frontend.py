@@ -381,7 +381,7 @@ with tab2:
         col_e, col_d = st.columns([3, 1])
         with col_e:
             sub_entity = st.text_input("Entity", placeholder="e.g. Transformer",
-                                        label_visibility="collapsed")
+                                        label_visibility="collapsed", key="sg_entity")
         with col_d:
             depth = st.number_input("Depth", 1, 4, 2, label_visibility="collapsed")
 
@@ -447,7 +447,7 @@ with tab3:
 
     elif qmode == "Entity Neighbours":
         ent_q   = st.text_input("Entity", placeholder="e.g. Transformer",
-                                 label_visibility="collapsed")
+                                 label_visibility="collapsed", key="nb_entity")
         limit_q = st.slider("Max results", 5, 50, 15)
         if st.button("Search", use_container_width=True) and ent_q:
             with st.spinner("Fetching..."):
@@ -718,34 +718,59 @@ with tab6:
     st.markdown('<p class="step-pill">STEP 06 · SEMANTIC SEARCH</p>',
                 unsafe_allow_html=True)
     st.markdown(
-        '<div class="card-amber">Upload and summarize a document first — '
-        'chunks are automatically indexed in Pinecone.</div>',
+        '<div class="card-amber">Chunks are automatically indexed in Pinecone '
+        'when you run Summarize or Build Graph. Re-upload after any code changes.</div>',
         unsafe_allow_html=True
     )
-
+ 
     search_q = st.text_input(
         "Search query",
-        placeholder="How does IoT help in agriculture?",
-        label_visibility="collapsed"
+        placeholder="How does self-attention work?",
+        label_visibility="collapsed",
+        key="search_query"
     )
-    top_k = st.slider("Number of results", 1, 10, 5)
-
+    top_k = st.slider("Number of results", 1, 10, 5, key="search_topk")
+ 
     if st.button("Search", use_container_width=True, key="semantic_search") and search_q:
-        with st.spinner("Searching..."):
+        with st.spinner("Searching Pinecone..."):
             try:
                 resp = requests.get(
                     f"{BASE_URL}/search",
                     params={"query": search_q, "top_k": top_k}
                 )
                 if resp.status_code == 200:
-                    data = resp.json()
-                    st.markdown(f"**{data.get('count', 0)} relevant chunks found**")
+                    data  = resp.json()
+                    count = data.get("count", 0)
+                    st.markdown(f"**{count} relevant chunks found**")
+ 
+                    if count == 0:
+                        st.info("No results — try uploading and summarizing a document first.")
+ 
                     for i, chunk in enumerate(data.get("results", []), 1):
-                        with st.expander(f"Result {i}"):
-                            st.write(chunk)
+                        # Split cleaned text into sentences for bullet display
+                        sentences = [s.strip() for s in chunk.split("\n") if s.strip()]
+ 
+                        if not sentences:
+                            continue
+ 
+                        bullets = "".join(
+                            f'<li style="margin-bottom:0.5rem;line-height:1.65;'
+                            f'font-size:0.88rem">{s}</li>'
+                            for s in sentences
+                        )
+ 
+                        st.markdown(
+                            f'<div class="card" style="margin-bottom:0.8rem">'
+                            f'<p class="section-label">RESULT {i}</p>'
+                            f'<ul style="font-family:DM Sans,sans-serif;color:#1a1a2e;'
+                            f'margin:0;padding-left:1.2rem">{bullets}</ul>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+ 
                 elif resp.status_code == 503:
                     st.error("Vector store unavailable — check PINECONE_API_KEY in .env")
                 else:
-                    st.error(f"Error: {resp.text}")
+                    st.error(f"Error {resp.status_code}: {resp.text}")
             except Exception as e:
                 st.error(str(e))
