@@ -147,7 +147,7 @@ with st.sidebar:
     st.markdown('<p class="section-label" style="color:#6a6458">Pipeline Status</p>',
                 unsafe_allow_html=True)
     for label, done in {
-        "01 · Summarize":  st.session_state.summarize_result is not None,
+        "01 · Summarize":   st.session_state.summarize_result is not None,
         "02 · Graph Build": st.session_state.graph_built,
     }.items():
         icon  = "✓" if done else "○"
@@ -208,7 +208,7 @@ with tab1:
                         f"{BASE_URL}/summarize",
                         files={"file": (uploaded_file.name, uploaded_file, mime)},
                         data={"mode": mode},
-                        timeout=600                         # 10 min for large docs
+                        timeout=600
                     )
                     if resp.status_code == 200:
                         result = resp.json()
@@ -216,18 +216,18 @@ with tab1:
                         doc = result.get("document_summary", {})
                         st.session_state.section_summaries = doc.get("sections", [])
                         st.session_state.executive_summary = doc.get("executive_summary", "")
+                        # Store entities from summarize — always Dict[str, List[str]]
                         st.session_state.entities = result.get("entities", {})
                         st.success("Summary generated!")
                     else:
                         st.error(f"Error {resp.status_code}: {resp.text}")
                 except requests.exceptions.Timeout:
-                    st.error("Request timed out — the document may be too large. Try a shorter PDF.")
+                    st.error("Request timed out — the document may be too large.")
                 except Exception as e:
                     st.error(f"Connection failed: {e}")
 
         # ── BUILD GRAPH ───────────────────────────────────────────────────────
         if run_graph:
-            # ← warn user before starting so they don't click away
             st.markdown(
                 '<div class="card-warning">'
                 '⏳ &nbsp;Graph build can take <strong>5–15 minutes</strong> for a full paper. '
@@ -242,11 +242,15 @@ with tab1:
                         f"{BASE_URL}/graph/build",
                         files={"file": (uploaded_file.name, uploaded_file, mime)},
                         data={"mode": mode},
-                        timeout=1800                        # ← 30 min, was 600
+                        timeout=1800
                     )
                     if resp.status_code == 200:
                         r = resp.json()
                         st.session_state.graph_built = True
+                        # Graph build extracts from ALL chunks — most complete entities
+                        # Store these for evaluation (overrides summarize entities)
+                        if r.get("entities"):
+                            st.session_state.entities = r.get("entities", {})
                         st.success(
                             f"Graph built — {r.get('num_relations', 0)} triples, "
                             f"{r.get('num_entities', 0)} entities"
@@ -254,10 +258,7 @@ with tab1:
                     else:
                         st.error(f"Error {resp.status_code}: {resp.text}")
                 except requests.exceptions.Timeout:
-                    st.error(
-                        "Graph build timed out. Try setting MAX_CHUNKS = 8 in graph_pipeline.py "
-                        "to process fewer chunks and finish faster."
-                    )
+                    st.error("Graph build timed out.")
                 except Exception as e:
                     st.error(f"Connection failed: {e}")
 
@@ -360,16 +361,6 @@ with tab2:
                                          params={"type":"by_type","entity_type":entity_type,"limit":30})
                     if resp.status_code == 200:
                         data = resp.json()
-
-                        # ✅ Added modification
-                        st.session_state.graph_built = True
-                        if data.get("entities"):
-                            st.session_state.entities = data["entities"]
-                        st.success(
-                            f"Graph built — {data.get('num_relations', 0)} triples, "
-                            f"{data.get('num_entities', 0)} entities"
-                        )
-
                         st.markdown(f"**{data.get('count',0)} {entity_type} entities**")
                         for ent in data.get("entities", []):
                             with st.expander(ent["entity"]):
@@ -403,16 +394,6 @@ with tab2:
                                                  "depth":depth,"limit":50})
                     if resp.status_code == 200:
                         data = resp.json()
-
-                        # ✅ Added modification
-                        st.session_state.graph_built = True
-                        if data.get("entities"):
-                            st.session_state.entities = data["entities"]
-                        st.success(
-                            f"Graph built — {data.get('num_relations', 0)} triples, "
-                            f"{data.get('num_entities', 0)} entities"
-                        )
-
                         c1, c2 = st.columns(2)
                         c1.metric("Nodes", data.get("node_count", 0))
                         c2.metric("Edges", data.get("edge_count", 0))
@@ -428,6 +409,7 @@ with tab2:
                         st.error(resp.text)
                 except Exception as e:
                     st.error(str(e))
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — QUERY
@@ -621,15 +603,42 @@ with tab5:
     st.markdown('<p class="step-pill">STEP 05 · EVALUATION</p>', unsafe_allow_html=True)
 
     if st.session_state.summarize_result:
-        doc              = st.session_state.summarize_result.get("document_summary", {})
-        default_exec     = doc.get("executive_summary", "")
-        default_entities = st.session_state.entities or {}
+        doc          = st.session_state.summarize_result.get("document_summary", {})
+        default_exec = doc.get("executive_summary", "")
         default_sections = [
             {"section_summary": s.get("section_summary", "")}
             for s in doc.get("sections", []) if s.get("section_summary")
         ]
+
+        # Use entities from session state — graph build entities if available
+        # (most complete), otherwise fall back to summarize entities
+        raw_entities = st.session_state.entities or {}
+
+        # Guard: must be Dict[str, List[str]] — graph query returns wrong format
+        if isinstance(raw_entities, list):
+            default_entities = {}
+            st.warning("Run Summarize or Build Graph first to populate entities.")
+        else:
+            default_entities = {
+                cat: vals for cat, vals in raw_entities.items()
+                if isinstance(vals, list) and all(isinstance(v, str) for v in vals)
+            }
+
+        # Show which source the entities came from
+        if default_entities:
+            total_ents = sum(len(v) for v in default_entities.values())
+            st.markdown(
+                f'<div class="card-amber">Using <strong>{total_ents} entities</strong> '
+                f'from {"Graph Build" if st.session_state.graph_built else "Summarize"} '
+                f'for evaluation.</div>',
+                unsafe_allow_html=True
+            )
+        else:
+            st.info("Build the Knowledge Graph first for best entity coverage, then run evaluation.")
+
     else:
         default_exec, default_entities, default_sections = "", {}, []
+        st.info("Run Summarize first to auto-populate evaluation inputs.")
 
     exec_text  = st.text_area("Executive Summary", value=default_exec, height=100,
                                help="Auto-populated from Summarize tab")
@@ -638,6 +647,8 @@ with tab5:
     if st.button("Run Evaluation", use_container_width=True):
         if not default_sections and not exec_text:
             st.warning("Run Summarize first.")
+        elif not default_entities:
+            st.warning("Build the Knowledge Graph first for entity accuracy evaluation.")
         else:
             with st.spinner("Running full evaluation..."):
                 payload = {
@@ -730,6 +741,7 @@ with tab5:
                 except Exception as e:
                     st.error(str(e))
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 6 — SEMANTIC SEARCH
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -741,7 +753,7 @@ with tab6:
         'when you run Summarize or Build Graph. Re-upload after any code changes.</div>',
         unsafe_allow_html=True
     )
- 
+
     search_q = st.text_input(
         "Search query",
         placeholder="How does self-attention work?",
@@ -749,7 +761,7 @@ with tab6:
         key="search_query"
     )
     top_k = st.slider("Number of results", 1, 10, 5, key="search_topk")
- 
+
     if st.button("Search", use_container_width=True, key="semantic_search") and search_q:
         with st.spinner("Searching Pinecone..."):
             try:
@@ -758,35 +770,27 @@ with tab6:
                     params={"query": search_q, "top_k": top_k}
                 )
                 if resp.status_code == 200:
-                    data  = resp.json()
-                    count = data.get("count", 0)
-                    st.markdown(f"**{count} relevant chunks found**")
- 
-                    if count == 0:
-                        st.info("No results — try uploading and summarizing a document first.")
- 
-                    for i, chunk in enumerate(data.get("results", []), 1):
-                        # Split cleaned text into sentences for bullet display
+                    data = resp.json()
+                    # Show LLM answer prominently
+                    st.markdown(
+                        f'<div class="card-amber"><strong>Answer</strong><br>'
+                        f'{data.get("answer","No answer generated.")}</div>',
+                        unsafe_allow_html=True
+                    )
+                    st.caption(f"Based on {data.get('source_count', 0)} source chunks")
+                    # Show source chunks
+                    for i, chunk in enumerate(data.get("chunks", []), 1):
                         sentences = [s.strip() for s in chunk.split("\n") if s.strip()]
- 
-                        if not sentences:
-                            continue
- 
-                        bullets = "".join(
-                            f'<li style="margin-bottom:0.5rem;line-height:1.65;'
-                            f'font-size:0.88rem">{s}</li>'
+                        bullets   = "".join(
+                            f'<li style="margin-bottom:0.4rem">{s}</li>'
                             for s in sentences
                         )
- 
                         st.markdown(
-                            f'<div class="card" style="margin-bottom:0.8rem">'
-                            f'<p class="section-label">RESULT {i}</p>'
-                            f'<ul style="font-family:DM Sans,sans-serif;color:#1a1a2e;'
-                            f'margin:0;padding-left:1.2rem">{bullets}</ul>'
-                            f'</div>',
+                            f'<div class="card"><p class="section-label">SOURCE {i}</p>'
+                            f'<ul style="font-size:0.85rem;color:#6b6560;padding-left:1.2rem">'
+                            f'{bullets}</ul></div>',
                             unsafe_allow_html=True
                         )
- 
                 elif resp.status_code == 503:
                     st.error("Vector store unavailable — check PINECONE_API_KEY in .env")
                 else:

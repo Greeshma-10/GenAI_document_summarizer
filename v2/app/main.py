@@ -1,16 +1,5 @@
 """
 FastAPI Application Entry Point
-
-Endpoints:
-  POST /summarize          — full document summarisation pipeline
-  POST /entities           — entity extraction only
-  POST /graph/build        — knowledge graph construction
-  GET  /graph/query        — structured graph query
-  POST /graph/ask          — natural language graph query
-  POST /fact/verify        — single claim verification
-  POST /fact/verify/batch  — batch claim verification
-  POST /evaluate           — full pipeline evaluation
-  GET  /search             — semantic vector search
 """
 
 import os
@@ -22,25 +11,17 @@ from typing import Dict, List, Optional
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
-# Ingestion
 from v2.ingestion.document_parser import parse_document
-
-# Summarisation pipeline
 from v2.pipelines.summarization.chunking import chunk_text
 from v2.pipelines.summarization.summarizer import summarize_chunks
 from v2.pipelines.summarization.section_summarizer import summarize_section
 from v2.pipelines.summarization.executive_summarizer import generate_executive_summary
 from v2.pipelines.summarization.semantic_section_builder import build_semantic_sections
 from v2.pipelines.summarization.document_assembler import assemble_document
-
-# Evaluation
-from v2.pipelines.evaluation.meaning_evaluator import compute_coverage_score, run_full_evaluation
-
-# Entity extraction
+from v2.pipelines.evaluation.meaning_evaluator import compute_coverage_score
+from v2.pipelines.evaluation.meaning_evaluator import run_full_evaluation
 from v2.pipelines.entity_extraction.entity_extractor import extract_entities
 from v2.pipelines.entity_pipeline import run_entity_pipeline
-
-# Knowledge graph
 from v2.graph.relation_extractor import RelationExtractor
 from v2.graph.graph_builder import GraphBuilder
 from v2.graph.graph_service import GraphService
@@ -49,25 +30,14 @@ from v2.graph.vector_store import VectorStore
 from v2.graph.schema import CATEGORY_TO_SCHEMA_TYPE
 from v2.graph.entity_utils import flatten_entities
 from v2.pipelines.graph_pipeline import run_graph_pipeline
-
 from v2.logging_config import get_logger
 
 logger = get_logger(__name__)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# App
-# ─────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="Document Summarization & Knowledge Extraction API",
     version="2.0",
 )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Service initialisation
-# ─────────────────────────────────────────────────────────────────────────────
 
 graph_service = GraphService()
 
@@ -81,9 +51,7 @@ except Exception:
     fact_verifier = FactVerifier(graph_service)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Request models
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Request models ────────────────────────────────────────────────────────────
 
 class NLQueryRequest(BaseModel):
     question: str
@@ -106,9 +74,7 @@ class EvaluationRequest(BaseModel):
     max_claims:         int = 15
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Dedup helper (shared by /summarize and /graph/build)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Dedup helper ──────────────────────────────────────────────────────────────
 
 _INVERSE_PAIRS         = {"USES": "USED_IN", "USED_IN": "USES"}
 _SUBJECT_MUST_BE_TYPED = {
@@ -119,57 +85,42 @@ _SUBJECT_MUST_BE_TYPED = {
 def _dedup_triples(all_triples, type_map):
     seen_keys      = set()
     unique_triples = []
-
     for t in all_triples:
         subj = t.subject.strip()
         obj  = t.object.strip()
         rel  = t.relation
-
-        key = (subj.lower(), rel, obj.lower())
+        key  = (subj.lower(), rel, obj.lower())
         if key in seen_keys:
             continue
-
         inverse_rel = _INVERSE_PAIRS.get(rel)
         if inverse_rel and (obj.lower(), inverse_rel, subj.lower()) in seen_keys:
             seen_keys.add(key)
             continue
-
         if rel in _SUBJECT_MUST_BE_TYPED and subj.lower() not in type_map:
             continue
-
         if subj.lower() == obj.lower():
             continue
-
         if rel in {"DEVELOPED_BY", "PROPOSED_BY"}:
             if type_map.get(obj.lower().strip(), "Unknown") not in {"ORGANIZATION", "Unknown"}:
                 continue
-
         if re.search(r'\[|\bJournal\b|\bInternational\b|\bConference\b', subj, re.IGNORECASE):
             continue
-
         seen_keys.add(key)
         unique_triples.append(t)
-
     return unique_triples
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _validate_mode(mode: str) -> str:
     return mode if mode in {"academic", "research"} else "academic"
 
-
 async def _save_upload(file: UploadFile) -> str:
-    """Write an uploaded file to a temp path and return the path."""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(await file.read())
         return tmp.name
 
-
 def _index_chunks_in_pinecone(chunks: List[str], filename: str) -> None:
-    """Best-effort Pinecone indexing — logs on failure, never raises."""
     if not vector_store:
         return
     try:
@@ -181,18 +132,21 @@ def _index_chunks_in_pinecone(chunks: List[str], filename: str) -> None:
         logger.exception("Pinecone indexing failed | filename=%s", filename)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Health
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Health ────────────────────────────────────────────────────────────────────
 
 @app.get("/")
 def health_check():
-    return {"message": "API is healthy and running!"}
+    return {
+        "status":   "healthy",
+        "version":  "2.0",
+        "services": {
+            "neo4j":    "connected",
+            "pinecone": "connected" if vector_store else "unavailable",
+        }
+    }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Summarise
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Summarise ─────────────────────────────────────────────────────────────────
 
 @app.post("/summarize")
 async def summarize(
@@ -204,9 +158,8 @@ async def summarize(
     temp_path   = await _save_upload(file)
 
     try:
-        # Ingestion
-        t0            = time.time()
-        document_data = parse_document(temp_path)
+        t0             = time.time()
+        document_data  = parse_document(temp_path)
         ingestion_time = round(time.time() - t0, 2)
         logger.info("Ingestion complete | time=%.2fs", ingestion_time)
 
@@ -215,7 +168,6 @@ async def summarize(
             document_data.get("image_text", "")
         )
 
-        # Chunking
         t0            = time.time()
         chunks        = chunk_text(combined_text)
         chunking_time = round(time.time() - t0, 2)
@@ -223,33 +175,27 @@ async def summarize(
 
         _index_chunks_in_pinecone(chunks, file.filename)
 
-        # Chunk summarisation
         t0              = time.time()
         chunk_summaries = summarize_chunks(chunks, mode=mode)
         chunk_time      = round(time.time() - t0, 2)
         logger.info("Chunk summarisation complete | time=%.2fs", chunk_time)
 
-        # Semantic section building
         t0                 = time.time()
         semantic_sections  = build_semantic_sections(chunk_summaries)
         section_build_time = round(time.time() - t0, 2)
-        logger.info("Section building complete | sections=%d time=%.2fs",
-                    len(semantic_sections), section_build_time)
+        logger.info("Section building complete | sections=%d", len(semantic_sections))
 
-        # Section summarisation
         t0                = time.time()
         section_summaries = []
         for section in semantic_sections:
             section_summary = summarize_section(
-                section["section_chunks"],
-                section["section_id"],
+                section["section_chunks"], section["section_id"],
             )
             section_summary["covered_chunk_ids"] = section["covered_chunk_ids"]
             section_summaries.append(section_summary)
         section_time = round(time.time() - t0, 2)
         logger.info("Section summarisation complete | time=%.2fs", section_time)
 
-        # Executive summary
         t0 = time.time()
         try:
             executive_summary = generate_executive_summary(section_summaries, mode=mode)
@@ -258,9 +204,8 @@ async def summarize(
             logger.exception("Executive summary generation failed")
             executive_summary = {
                 "executive_summary": "Executive summary failed.",
-                "key_points":        [],
-                "risks_action_items": [],
-                "tldr":              "Executive TLDR unavailable.",
+                "key_points": [], "risks_action_items": [],
+                "tldr": "Executive TLDR unavailable.",
             }
         executive_time = round(time.time() - t0, 2)
         logger.info("Executive summary complete | time=%.2fs", executive_time)
@@ -276,10 +221,7 @@ async def summarize(
             executive_summary.get("executive_summary", ""),
         )
 
-        # Entity extraction — from section summaries
         merged_entities: dict = {}
-
-        
         for sec in section_summaries:
             sec_text = sec.get("section_summary", "")
             if not sec_text:
@@ -287,22 +229,19 @@ async def summarize(
             extracted = extract_entities(sec_text)
             for category, values in extracted.items():
                 merged_entities.setdefault(category, []).extend(values)
-
         for category in merged_entities:
             merged_entities[category] = list(dict.fromkeys(merged_entities[category]))
 
         entity_dict = flatten_entities(merged_entities)
-
-        # Knowledge graph — from section summaries
-        relation_extractor = RelationExtractor()
-        graph_builder      = GraphBuilder()
-        all_triples        = []
-
         type_map = {
             v.lower().strip(): CATEGORY_TO_SCHEMA_TYPE.get(category, "CONCEPT")
             for category, values in entity_dict.items()
             for v in values
         }
+
+        relation_extractor = RelationExtractor()
+        graph_builder      = GraphBuilder()
+        all_triples        = []
 
         for sec in section_summaries:
             sec_text = sec.get("section_summary", "")
@@ -337,16 +276,13 @@ async def summarize(
         }
         response["document_summary"]["meaning_coverage_score"] = meaning_score
         response["document_summary"]["mode_used"]              = mode
-
         return response
 
     finally:
         os.remove(temp_path)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Entity extraction
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Entity extraction ─────────────────────────────────────────────────────────
 
 @app.post("/entities")
 async def extract_entities_api(
@@ -361,9 +297,7 @@ async def extract_entities_api(
         os.remove(temp_path)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Graph build
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Graph build ───────────────────────────────────────────────────────────────
 
 @app.post("/graph/build")
 async def build_graph_api(
@@ -382,15 +316,12 @@ async def build_graph_api(
                 _index_chunks_in_pinecone(chunks, file.filename)
             except Exception:
                 logger.exception("Pinecone pre-indexing failed during graph build")
-
         return run_graph_pipeline(temp_path, mode=mode)
     finally:
         os.remove(temp_path)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Graph query
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Graph query ───────────────────────────────────────────────────────────────
 
 _VALID_ENTITY_TYPES = {"MODEL", "DATASET", "METRIC", "ORGANIZATION", "TASK", "CONCEPT"}
 
@@ -407,106 +338,82 @@ def query_graph(
     try:
         if type == "neighbours":
             if not entity:
-                raise HTTPException(status_code=400, detail="'entity' param required")
+                raise HTTPException(400, "'entity' param required")
             return graph_service.query("neighbours", entity=entity, limit=limit)
-
         elif type == "path":
             if not from_entity or not to_entity:
-                raise HTTPException(status_code=400, detail="'from' and 'to' params required")
+                raise HTTPException(400, "'from' and 'to' params required")
             return graph_service.query("path", from_entity=from_entity, to_entity=to_entity)
-
         elif type == "by_type":
             if not entity_type:
-                raise HTTPException(status_code=400, detail="'entity_type' param required")
+                raise HTTPException(400, "'entity_type' param required")
             if entity_type.upper() not in _VALID_ENTITY_TYPES:
-                raise HTTPException(
-                    status_code=400,
-                    detail="'entity_type' must be one of %s" % _VALID_ENTITY_TYPES,
-                )
+                raise HTTPException(400, "entity_type must be one of %s" % _VALID_ENTITY_TYPES)
             return graph_service.query("by_type", entity_type=entity_type, limit=limit)
-
         elif type == "subgraph":
             if not entity:
-                raise HTTPException(status_code=400, detail="'entity' param required")
+                raise HTTPException(400, "'entity' param required")
             return graph_service.query("subgraph", entity=entity, depth=depth, limit=limit)
-
         else:
-            raise HTTPException(
-                status_code=400,
-                detail="'type' must be one of: neighbours | path | by_type | subgraph",
-            )
-
+            raise HTTPException(400, "type must be: neighbours | path | by_type | subgraph")
     except HTTPException:
         raise
     except Exception:
         logger.exception("Graph query failed | type=%s entity=%s", type, entity)
-        raise HTTPException(status_code=500, detail="Graph query failed")
+        raise HTTPException(500, "Graph query failed")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Natural language graph query
-# ─────────────────────────────────────────────────────────────────────────────
+# ── NL graph query ────────────────────────────────────────────────────────────
 
 @app.post("/graph/ask")
 def query_natural_language(request: NLQueryRequest):
     if not request.question.strip():
-        raise HTTPException(status_code=400, detail="Question cannot be empty")
+        raise HTTPException(400, "Question cannot be empty")
     try:
         result = graph_service.query_nl(request.question, request.limit)
         if result.get("error") and not result["results"]:
-            raise HTTPException(status_code=500, detail=result["error"])
+            raise HTTPException(500, result["error"])
         return result
     except HTTPException:
         raise
     except Exception:
-        logger.exception("Natural language graph query failed | question=%s",
-                         request.question[:80])
-        raise HTTPException(status_code=500, detail="Natural language query failed")
+        logger.exception("NL query failed | question=%s", request.question[:80])
+        raise HTTPException(500, "Natural language query failed")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Fact verification — single
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Fact verification ─────────────────────────────────────────────────────────
 
 @app.post("/fact/verify")
 def verify_fact(request: FactCheckRequest):
     if not request.claim.strip():
-        raise HTTPException(status_code=400, detail="Claim cannot be empty")
+        raise HTTPException(400, "Claim cannot be empty")
     try:
         return fact_verifier.verify(request.claim, request.source_text or "")
     except Exception:
         logger.exception("Fact verification failed | claim=%s", request.claim[:80])
-        raise HTTPException(status_code=500, detail="Fact verification failed")
+        raise HTTPException(500, "Fact verification failed")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Fact verification — batch
-# ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/fact/verify/batch")
 def verify_facts_batch(request: BatchFactCheckRequest):
     if not request.claims:
-        raise HTTPException(status_code=400, detail="Claims list cannot be empty")
+        raise HTTPException(400, "Claims list cannot be empty")
     try:
         results      = fact_verifier.verify_batch(request.claims, request.source_text or "")
         supported    = sum(1 for r in results if r["verdict"] == "SUPPORTED")
         contradicted = sum(1 for r in results if r["verdict"] == "CONTRADICTED")
         unverified   = sum(1 for r in results if r["verdict"] == "UNVERIFIED")
         return {
-            "total":        len(results),
-            "supported":    supported,
-            "contradicted": contradicted,
-            "unverified":   unverified,
-            "results":      results,
+            "total": len(results), "supported": supported,
+            "contradicted": contradicted, "unverified": unverified,
+            "results": results,
         }
     except Exception:
-        logger.exception("Batch fact verification failed | claim_count=%d", len(request.claims))
-        raise HTTPException(status_code=500, detail="Batch fact verification failed")
+        logger.exception("Batch fact verification failed | count=%d", len(request.claims))
+        raise HTTPException(500, "Batch fact verification failed")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Evaluate
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Evaluate ──────────────────────────────────────────────────────────────────
 
 @app.post("/evaluate")
 def evaluate(request: EvaluationRequest):
@@ -522,12 +429,10 @@ def evaluate(request: EvaluationRequest):
         )
     except Exception:
         logger.exception("Evaluation pipeline failed")
-        raise HTTPException(status_code=500, detail="Evaluation failed")
+        raise HTTPException(500, "Evaluation failed")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Semantic search
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Semantic search (RAG) ─────────────────────────────────────────────────────
 
 @app.get("/search")
 def semantic_search(
@@ -535,15 +440,22 @@ def semantic_search(
     top_k: int = Query(5,   description="Number of results to return"),
 ):
     if not vector_store:
-        raise HTTPException(
-            status_code=503,
-            detail="Vector store unavailable — check PINECONE_API_KEY",
-        )
+        raise HTTPException(503, "Vector store unavailable — check PINECONE_API_KEY")
     if not query.strip():
-        raise HTTPException(status_code=400, detail="Query cannot be empty")
+        raise HTTPException(400, "Query cannot be empty")
     try:
-        results = vector_store.search(query, top_k=top_k)
-        return {"query": query, "count": len(results), "results": results}
+        # RAG: retrieve chunks + generate focused LLM answer
+        result = vector_store.answer(query, top_k=top_k)
+        return {
+            "query":        query,
+            "answer":       result["answer"],
+            "source_count": result["source_count"],
+            "chunks":       result["chunks"],
+        }
     except Exception:
         logger.exception("Semantic search failed | query=%s", query[:80])
-        raise HTTPException(status_code=500, detail="Semantic search failed")
+        raise HTTPException(500, "Semantic search failed")
+    
+@app.get("/debug/index")
+def debug_index():
+    return vector_store.describe_index() if vector_store else {"error": "no vector store"}

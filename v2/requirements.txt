@@ -1,0 +1,55 @@
+# Web Framework
+fastapi
+uvicorn[standard]
+
+# Frontend (optional)
+streamlit
+
+# AWS (Bedrock + S3)
+boto3
+botocore
+
+# ML
+scikit-learn
+numpy
+
+# NLP
+tiktoken
+
+# LangChain (Core)
+langchain
+langchain-community
+
+# 🔥 Bedrock Integration
+langchain-aws
+
+# PDF Processing
+pypdf2
+pdfplumber
+unstructured
+
+# Graph DB
+neo4j
+
+# Vector DB
+pinecone-client
+
+# Data Validation
+pydantic
+
+# Env Management
+python-dotenv
+
+# Logging
+structlog
+
+# HTTP
+httpx
+requests
+
+# Async
+anyio
+aiofiles
+
+# Retry / Stability
+tenacity

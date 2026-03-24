@@ -2,10 +2,11 @@
 Vector Store Service — Pinecone
 
 Handles:
-  1. index_chunks()     — embed and store document chunks in Pinecone
-  2. search()           — semantic search for relevant chunks given a query
-  3. delete_document()  — remove all chunks for a specific document
-  4. delete_all()       — clear the entire index
+  1. index_chunks()    — embed and store document chunks in Pinecone
+  2. search()          — semantic search for relevant chunks given a query
+  3. answer()          — RAG: retrieve chunks + LLM answer for a question
+  4. delete_document() — remove all chunks for a specific document
+  5. delete_all()      — clear the entire index
 """
 
 import hashlib
@@ -13,14 +14,18 @@ import re
 from typing import List, Optional
 
 from pinecone import Pinecone, ServerlessSpec
+from langchain_ollama import OllamaLLM
 
 from v1.services.bedrock_service import get_embedding
 from v2.config import settings
 from v2.logging_config import get_logger
+from v2.prompts.rag import build_rag_prompt
 
 logger = get_logger(__name__)
 
-# Non-Pinecone constants that don't belong in config
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
 UPSERT_BATCH_SIZE          = 100
 METADATA_CHAR_LIMIT        = 3000
 METADATA_CHAR_MIN_FALLBACK = 500
@@ -33,11 +38,13 @@ MATH_SYMBOLS               = set('=∈∑→×·≤≥∗∝∂√∀∃∩∪�
 # ─────────────────────────────────────────────────────────────────────────────
 def _clean_chunk_text(text: str) -> str:
     """
-    Clean a raw PDF chunk and split it into readable sentences.
-    Returns newline-separated sentences for bullet display, or empty string
-    if the result is too short to be useful.
+    Clean a raw PDF chunk and split into readable sentences.
+    Returns newline-separated sentences for bullet display,
+    or empty string if result is too short.
     """
+    # Fix broken hyphenated words across lines
     text = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
+    # Remove citation numbers
     text = re.sub(r'\[\d+(?:,\s*\d+)*\]', '', text)
 
     clean_lines = []
@@ -46,7 +53,6 @@ def _clean_chunk_text(text: str) -> str:
         if not stripped:
             continue
         if sum(1 for c in stripped if c in MATH_SYMBOLS) >= 2:
-            logger.debug("Skipping math line: %s", stripped[:60])
             continue
         if re.match(r'^\d+\s*$', stripped):
             continue
@@ -61,7 +67,6 @@ def _clean_chunk_text(text: str) -> str:
     text = re.sub(r'\[\s*\]', '', text).strip()
 
     if len(text) < MIN_CHUNK_TEXT_LEN:
-        logger.debug("Chunk too short after cleaning (%d chars), discarding", len(text))
         return ""
 
     sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
@@ -97,13 +102,19 @@ class VectorStore:
             logger.info("Pinecone index '%s' is ready", index_name)
 
         self.index = self.pc.Index(index_name)
+        self._llm  = None   # lazy-loaded only when answer() is called
+
+    # ─────────────────────────────────────────────────────────────────────────
+    def _get_llm(self) -> OllamaLLM:
+        """Lazy-load LLM — only initialised when answer() is first called."""
+        if self._llm is None:
+            self._llm = OllamaLLM(model="llama3")
+            logger.info("RAG LLM initialised")
+        return self._llm
 
     # ─────────────────────────────────────────────────────────────────────────
     def index_chunks(self, chunks: List[str], doc_id: str = "default") -> int:
-        """
-        Embed and upsert chunks into Pinecone.
-        Returns number of chunks successfully indexed.
-        """
+        """Embed and upsert chunks into Pinecone. Returns count indexed."""
         if not chunks:
             logger.warning("index_chunks called with empty chunk list | doc_id='%s'", doc_id)
             return 0
@@ -127,7 +138,6 @@ class VectorStore:
                         if last_period > METADATA_CHAR_MIN_FALLBACK
                         else truncated
                     )
-                    logger.debug("Chunk %d truncated to %d chars", i, len(clean_chunk))
 
                 embedding = get_embedding(chunk)
                 vectors.append({
@@ -154,21 +164,16 @@ class VectorStore:
             logger.info("Upserted %d chunks (batch %d) | doc_id='%s'",
                         len(batch), batch_num, doc_id)
 
-        logger.info("Indexed %d chunks | doc_id='%s'", len(vectors), doc_id)
+        logger.info("Indexed %d chunks total | doc_id='%s'", len(vectors), doc_id)
         return len(vectors)
 
     # ─────────────────────────────────────────────────────────────────────────
-    def search(self, query: str, top_k: int = 5, doc_id: Optional[str] = None) -> List[str]:
+    def search(self, query: str, top_k: int = 5,
+               doc_id: Optional[str] = None) -> List[str]:
         """
-        Semantic search — return the most relevant chunks for a query.
-
-        Args:
-            query:  the search query (e.g. a claim to verify)
-            top_k:  number of results to return
-            doc_id: if provided, filter to chunks from this document only
-
-        Returns:
-            List of chunk text strings, most relevant first.
+        Semantic search — return most relevant chunks for a query.
+        Retrieves top_k * 3 candidates then filters by threshold,
+        so low-scoring chunks don't reduce result count.
         """
         if not query.strip():
             logger.warning("search called with empty query")
@@ -183,29 +188,102 @@ class VectorStore:
         try:
             filter_dict = {"doc_id": {"$eq": doc_id}} if doc_id else None
 
+            # Retrieve 3x candidates to ensure enough pass threshold
             results = self.index.query(
                 vector=query_embedding,
-                top_k=top_k,
+                top_k=top_k * 3,
                 include_metadata=True,
                 filter=filter_dict,
             )
 
-            chunks = [
-                match["metadata"]["text"]
-                for match in results.get("matches", [])
-                if match.get("score", 0) > settings.SIMILARITY_THRESHOLD
-                and match.get("metadata", {}).get("text")
-            ]
+            all_matches = results.get("matches", [])
 
-            logger.info(
-                "Search returned %d chunks (score > %.2f) | doc_id='%s' | query='%s'",
-                len(chunks), settings.SIMILARITY_THRESHOLD, doc_id, query[:60],
-            )
+            # Log all scores for debugging
+            scores = [round(m.get("score", 0), 3) for m in all_matches[:10]]
+            logger.info("Pinecone raw scores (top 10): %s | query='%s'",
+                        scores, query[:60])
+
+            # Filter by threshold then cap at top_k
+            chunks = []
+            for match in all_matches:
+                score = match.get("score", 0)
+                text  = match.get("metadata", {}).get("text", "")
+                if score > settings.SIMILARITY_THRESHOLD and text:
+                    cleaned = _clean_chunk_text(text)
+                    if cleaned:
+                        chunks.append(cleaned)
+                if len(chunks) >= top_k:
+                    break
+
+            logger.info("Search returned %d chunks (threshold=%.2f) | query='%s'",
+                        len(chunks), settings.SIMILARITY_THRESHOLD, query[:60])
             return chunks
 
         except Exception:
             logger.exception("Pinecone search failed | query='%s'", query[:80])
             return []
+
+    # ─────────────────────────────────────────────────────────────────────────
+    def answer(self, question: str, top_k: int = 8,
+               doc_id: Optional[str] = None) -> dict:
+        """
+        RAG: retrieve relevant chunks then generate a focused LLM answer.
+
+        Returns:
+            {
+              "question":     str,
+              "answer":       str,   <- LLM-generated, grounded in chunks
+              "chunks":       list,  <- retrieved chunks for transparency
+              "source_count": int
+            }
+        """
+        logger.info("RAG answer | question='%s'", question[:80])
+
+        # Step 1: retrieve relevant chunks
+        chunks = self.search(question, top_k=top_k, doc_id=doc_id)
+
+        if not chunks:
+            logger.warning("No relevant chunks found | question='%s'", question[:80])
+            return {
+                "question":     question,
+                "answer":       "No relevant information found in the document.",
+                "chunks":       [],
+                "source_count": 0,
+            }
+
+        # Step 2: build numbered context from chunks
+        context = "\n\n".join(
+            f"[Source {i+1}]\n{chunk}"
+            for i, chunk in enumerate(chunks)
+        )
+
+        # Step 3: generate focused answer using RAG prompt
+        prompt = build_rag_prompt(question, context)
+        try:
+            llm    = self._get_llm()
+            answer = str(llm.invoke(prompt)).strip()
+            logger.info("RAG answer generated | sources=%d", len(chunks))
+        except Exception:
+            logger.exception("RAG LLM call failed | question='%s'", question[:80])
+            answer = "Could not generate an answer — LLM call failed."
+
+        return {
+            "question":     question,
+            "answer":       answer,
+            "chunks":       chunks,
+            "source_count": len(chunks),
+        }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    def describe_index(self) -> dict:
+        """Return index stats — useful for debugging chunk count."""
+        try:
+            stats = self.index.describe_index_stats()
+            logger.info("Index stats: %s", stats)
+            return dict(stats)
+        except Exception:
+            logger.exception("Failed to describe index")
+            return {}
 
     # ─────────────────────────────────────────────────────────────────────────
     def delete_document(self, doc_id: str) -> None:
