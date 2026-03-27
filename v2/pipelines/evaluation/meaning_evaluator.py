@@ -1,11 +1,5 @@
 """
 Evaluation
-
-Three evaluation metrics for document summarisation pipelines:
-  1. compute_coverage_score()    — semantic similarity between sections and executive summary
-  2. compute_factual_accuracy()  — claim verification against the knowledge graph
-  3. compute_entity_accuracy()   — entity extraction quality (reference or self-consistency)
-  4. run_full_evaluation()       — runs all three and returns a combined report
 """
 
 import re
@@ -88,16 +82,6 @@ def compute_factual_accuracy(
     """
     Auto-extracts claims from section summaries and verifies each one
     against the knowledge graph.
-
-    Returns:
-      {
-        "score":        float  (0-100, % of claims supported),
-        "total_claims": int,
-        "supported":    int,
-        "contradicted": int,
-        "unverified":   int,
-        "details":      list[dict]
-      }
     """
     all_claims = []
     for sec in section_summaries:
@@ -160,14 +144,6 @@ def compute_entity_accuracy(
     """
     If reference_entities provided  -> precision, recall, F1 per category.
     If no reference                 -> self-consistency score
-                                       (breadth + dedup rate).
-
-    Returns:
-      {
-        "mode":         "reference" | "self_consistency",
-        "overall":      { "precision", "recall", "f1" }  or  { "score" },
-        "per_category": { category: { ... } }
-      }
     """
     if reference_entities:
         logger.info("Entity accuracy mode: reference")

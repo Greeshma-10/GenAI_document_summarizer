@@ -1,12 +1,5 @@
 """
 Graph Query Router — FastAPI endpoints
-
-Endpoints:
-  GET  /graph/query              — neighbours of an entity
-  GET  /graph/path               — shortest path between two entities
-  GET  /graph/type/{entity_type} — all entities of a given type
-  GET  /graph/subgraph           — N-hop neighbourhood
-  POST /graph/ask                — natural language query
 """
 
 from fastapi import APIRouter, HTTPException, Query

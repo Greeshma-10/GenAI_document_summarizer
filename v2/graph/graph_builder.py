@@ -1,6 +1,4 @@
 """
-Graph Builder Module
-
 Converts extracted triples into Neo4j Knowledge Graph
 """
 

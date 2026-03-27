@@ -3,7 +3,6 @@ from v2.pipelines.entity_extraction.entity_extractor import extract_entities
 from v2.pipelines.summarization.chunking import chunk_text
 from v2.graph.relation_extractor import RelationExtractor
 from v2.graph.graph_builder import GraphBuilder
-
 from v2.logging_config import get_logger
 
 

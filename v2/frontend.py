@@ -6,7 +6,7 @@ import time
 BASE_URL = "http://127.0.0.1:8000"
 
 st.set_page_config(
-    page_title="DocMind — Knowledge Extraction",
+    page_title="Knowledge Extraction Platform",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -64,6 +64,11 @@ section[data-testid="stSidebar"] .stMarkdown p { color: #a09880 !important; }
     border-radius: 0 10px 10px 0; padding: 1rem 1.4rem; margin-bottom: 1rem;
     font-family: 'DM Mono', monospace; font-size: 0.82rem; color: #7a4010;
 }
+.card-ref {
+    background: #f0f4ff; border: 1px solid #c0cce8; border-left: 4px solid #3a5fc8;
+    border-radius: 0 10px 10px 0; padding: 1rem 1.4rem; margin-bottom: 1rem;
+    font-family: 'DM Mono', monospace; font-size: 0.82rem; color: #1a2a6e;
+}
 .badge-supported {
     background: #e8f5ee; color: #1a6b3c; border: 1px solid #b8ddc8;
     padding: 3px 12px; border-radius: 4px; font-size: 0.72rem;
@@ -93,6 +98,26 @@ section[data-testid="stSidebar"] .stMarkdown p { color: #a09880 !important; }
     color: #3a3060; padding: 3px 10px; border-radius: 4px; font-size: 0.76rem;
     margin: 3px; font-family: 'DM Mono', monospace;
 }
+.entity-tag-ref {
+    display: inline-block; background: #e8eeff; border: 1px solid #b0c0e8;
+    color: #1a2a6e; padding: 3px 10px; border-radius: 4px; font-size: 0.76rem;
+    margin: 3px; font-family: 'DM Mono', monospace;
+}
+.entity-tag-tp {
+    display: inline-block; background: #e8f5ee; border: 1px solid #b8ddc8;
+    color: #1a6b3c; padding: 3px 10px; border-radius: 4px; font-size: 0.76rem;
+    margin: 3px; font-family: 'DM Mono', monospace;
+}
+.entity-tag-fp {
+    display: inline-block; background: #fdf0ee; border: 1px solid #e8b8b8;
+    color: #8b2020; padding: 3px 10px; border-radius: 4px; font-size: 0.76rem;
+    margin: 3px; font-family: 'DM Mono', monospace;
+}
+.entity-tag-fn {
+    display: inline-block; background: #fdf8e8; border: 1px solid #e8d48a;
+    color: #7a5c10; padding: 3px 10px; border-radius: 4px; font-size: 0.76rem;
+    margin: 3px; font-family: 'DM Mono', monospace;
+}
 .triple-row {
     background: #fafaf7; border-left: 3px solid #c8742a; padding: 0.6rem 1rem;
     margin-bottom: 0.4rem; border-radius: 0 6px 6px 0;
@@ -106,6 +131,11 @@ section[data-testid="stSidebar"] .stMarkdown p { color: #a09880 !important; }
     font-size: 0.68rem; font-family: 'DM Mono', monospace; color: #8a8070;
     text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.6rem;
 }
+.ref-legend {
+    font-family: 'DM Mono', monospace; font-size: 0.72rem; margin-bottom: 1rem;
+    display: flex; gap: 1rem; flex-wrap: wrap;
+}
+.ref-legend-item { display: flex; align-items: center; gap: 6px; }
 .sidebar-title { font-family: 'DM Serif Display', serif; font-size: 1.6rem; color: #f5f0e8; }
 .sidebar-sub { font-family: 'DM Mono', monospace; font-size: 0.7rem; color: #6a6458; letter-spacing: 0.05em; }
 .pipeline-step { font-family: 'DM Mono', monospace; font-size: 0.78rem; margin: 5px 0; }
@@ -134,8 +164,8 @@ if "graph_built" not in st.session_state:
 
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown('<p class="sidebar-title">DocMind</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sidebar-sub">knowledge extraction pipeline</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sidebar-title">KG Platform</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sidebar-sub">document summarization & extraction</p>', unsafe_allow_html=True)
     st.markdown("---")
 
     mode = st.selectbox(
@@ -167,7 +197,7 @@ with st.sidebar:
         st.progress(min(int(meaning), 100))
 
 # ── HEADER ────────────────────────────────────────────────────────────────────
-st.markdown('<h1 class="main-title">Doc<span>Mind</span></h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-title">Knowledge <span>Extraction</span></h1>', unsafe_allow_html=True)
 st.markdown(
     '<p class="sub-caption">MULTI-MODAL SUMMARIZATION · ENTITY EXTRACTION · '
     'KNOWLEDGE GRAPH · FACT VERIFICATION</p>',
@@ -176,8 +206,9 @@ st.markdown(
 st.markdown("---")
 
 # ── TABS ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📄  Summarize", "🕸  Graph", "🔍  Query", "✅  Fact Check", "📊  Evaluate", "🧲  Search",
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "📄  Summarize", "🕸  Graph", "🔍  Query", "✅  Fact Check",
+    "📊  Evaluate", "🎯  Ref Entities", "🧲  Search",
 ])
 
 
@@ -216,7 +247,6 @@ with tab1:
                         doc = result.get("document_summary", {})
                         st.session_state.section_summaries = doc.get("sections", [])
                         st.session_state.executive_summary = doc.get("executive_summary", "")
-                        # Store entities from summarize — always Dict[str, List[str]]
                         st.session_state.entities = result.get("entities", {})
                         st.success("Summary generated!")
                     else:
@@ -228,13 +258,6 @@ with tab1:
 
         # ── BUILD GRAPH ───────────────────────────────────────────────────────
         if run_graph:
-            st.markdown(
-                '<div class="card-warning">'
-                '⏳ &nbsp;Graph build can take <strong>5–15 minutes</strong> for a full paper. '
-                'Do not close this tab or refresh the page.'
-                '</div>',
-                unsafe_allow_html=True
-            )
             with st.spinner("Extracting entities and building graph — please wait..."):
                 uploaded_file.seek(0)
                 try:
@@ -247,8 +270,6 @@ with tab1:
                     if resp.status_code == 200:
                         r = resp.json()
                         st.session_state.graph_built = True
-                        # Graph build extracts from ALL chunks — most complete entities
-                        # Store these for evaluation (overrides summarize entities)
                         if r.get("entities"):
                             st.session_state.entities = r.get("entities", {})
                         st.success(
@@ -610,11 +631,8 @@ with tab5:
             for s in doc.get("sections", []) if s.get("section_summary")
         ]
 
-        # Use entities from session state — graph build entities if available
-        # (most complete), otherwise fall back to summarize entities
         raw_entities = st.session_state.entities or {}
 
-        # Guard: must be Dict[str, List[str]] — graph query returns wrong format
         if isinstance(raw_entities, list):
             default_entities = {}
             st.warning("Run Summarize or Build Graph first to populate entities.")
@@ -624,7 +642,6 @@ with tab5:
                 if isinstance(vals, list) and all(isinstance(v, str) for v in vals)
             }
 
-        # Show which source the entities came from
         if default_entities:
             total_ents = sum(len(v) for v in default_entities.values())
             st.markdown(
@@ -743,9 +760,311 @@ with tab5:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 6 — SEMANTIC SEARCH
+# TAB 6 — REFERENCE ENTITY EVALUATION  (NEW)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab6:
+    st.markdown('<p class="step-pill">STEP 05b · REFERENCE ENTITY EVALUATION</p>', unsafe_allow_html=True)
+
+    st.markdown(
+        '<div class="card-ref">'
+        '🎯 &nbsp;This tab runs entity extraction accuracy in <strong>reference mode</strong> — '
+        'computing Precision, Recall, and F1 per category against a gold-standard entity set you provide. '
+        'Without a reference set the Evaluate tab falls back to self-consistency scoring. '
+        'Use this tab whenever you have annotated ground truth.'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    # ── LEGEND ────────────────────────────────────────────────────────────────
+    st.markdown(
+        '<div class="ref-legend">'
+        '<span class="ref-legend-item"><span class="entity-tag-tp">entity</span> True Positive — extracted & in reference</span>'
+        '<span class="ref-legend-item"><span class="entity-tag-fp">entity</span> False Positive — extracted but NOT in reference</span>'
+        '<span class="ref-legend-item"><span class="entity-tag-fn">entity</span> False Negative — in reference but NOT extracted</span>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown("---")
+
+    # ── EXTRACTED ENTITIES (auto-populated from session or manual) ─────────
+    st.markdown("#### Extracted Entities")
+    st.caption("Auto-populated from Summarize / Graph Build. You can also paste JSON directly.")
+
+    raw_session_entities = st.session_state.entities or {}
+    if isinstance(raw_session_entities, dict):
+        default_extracted_json = json.dumps(raw_session_entities, indent=2)
+    else:
+        default_extracted_json = json.dumps({
+            "models": [], "datasets": [], "metrics": [],
+            "organizations": [], "tasks": [], "key_concepts": []
+        }, indent=2)
+
+    extracted_json_input = st.text_area(
+        "Extracted Entities JSON",
+        value=default_extracted_json,
+        height=200,
+        help="Dict[str, List[str]] — keys: models, datasets, metrics, organizations, tasks, key_concepts",
+        label_visibility="collapsed",
+        key="ref_extracted_json"
+    )
+
+    st.markdown("---")
+
+    # ── REFERENCE ENTITIES INPUT ───────────────────────────────────────────
+    st.markdown("#### Reference (Gold Standard) Entities")
+    st.caption("Enter your manually annotated ground truth below. Use the same 6 category keys.")
+
+    # Two input methods
+    ref_input_mode = st.radio(
+        "Input method",
+        ["Type manually per category", "Paste JSON directly"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="ref_input_mode"
+    )
+
+    CATEGORIES = ["models", "datasets", "metrics", "organizations", "tasks", "key_concepts"]
+
+    if ref_input_mode == "Type manually per category":
+        st.markdown("")
+        ref_manual = {}
+        cols_a, cols_b = st.columns(2)
+        for i, cat in enumerate(CATEGORIES):
+            col = cols_a if i % 2 == 0 else cols_b
+            with col:
+                raw = st.text_area(
+                    cat.replace("_", " ").upper(),
+                    placeholder=f"One {cat[:-1] if cat.endswith('s') else cat} per line",
+                    height=100,
+                    key=f"ref_manual_{cat}"
+                )
+                ref_manual[cat] = [v.strip() for v in raw.strip().split("\n") if v.strip()]
+
+        reference_entities = ref_manual
+
+    else:
+        st.markdown("")
+        placeholder_ref = json.dumps({
+            "models":        ["BERT", "GPT-2", "RoBERTa", "T5"],
+            "datasets":      ["SQuAD", "GLUE", "CoNLL-2003"],
+            "metrics":       ["BLEU", "F1", "Accuracy", "ROUGE"],
+            "organizations": ["Google", "OpenAI", "Facebook AI"],
+            "tasks":         ["Named Entity Recognition", "Machine Translation", "Question Answering"],
+            "key_concepts":  ["attention mechanism", "transformer", "fine-tuning", "pre-training"]
+        }, indent=2)
+
+        ref_json_input = st.text_area(
+            "Reference Entities JSON",
+            value="",
+            placeholder=placeholder_ref,
+            height=220,
+            help="Dict[str, List[str]] — same keys as extracted entities",
+            label_visibility="collapsed",
+            key="ref_json_input"
+        )
+
+        try:
+            reference_entities = json.loads(ref_json_input) if ref_json_input.strip() else {}
+        except json.JSONDecodeError:
+            st.error("Invalid JSON — check formatting.")
+            reference_entities = {}
+
+    st.markdown("---")
+
+    # ── VALIDATE & RUN ────────────────────────────────────────────────────────
+    # Parse extracted entities from the text area
+    try:
+        extracted_entities = json.loads(extracted_json_input)
+    except json.JSONDecodeError:
+        extracted_entities = {}
+        st.error("Extracted entities JSON is invalid — check the top text area.")
+
+    # Show coverage preview before running
+    if reference_entities:
+        total_ref = sum(len(v) for v in reference_entities.values() if isinstance(v, list))
+        total_ext = sum(len(v) for v in extracted_entities.values() if isinstance(v, list))
+        filled_cats = sum(1 for cat in CATEGORIES if reference_entities.get(cat))
+        p1, p2, p3 = st.columns(3)
+        p1.metric("Reference Entities", total_ref)
+        p2.metric("Extracted Entities", total_ext)
+        p3.metric("Categories Covered", f"{filled_cats} / {len(CATEGORIES)}")
+        st.markdown("")
+
+    run_ref = st.button("▶  Run Reference Evaluation", use_container_width=True, key="run_ref_eval")
+
+    if run_ref:
+        # Validation
+        if not extracted_entities:
+            st.warning("No extracted entities found. Run Summarize or Build Graph first.")
+            st.stop()
+        if not reference_entities or not any(reference_entities.values()):
+            st.warning("Please enter at least one reference entity before running.")
+            st.stop()
+
+        # Build payload — reuse section summaries from session if available
+        if st.session_state.summarize_result:
+            doc = st.session_state.summarize_result.get("document_summary", {})
+            section_summaries = [
+                {"section_summary": s.get("section_summary", "")}
+                for s in doc.get("sections", []) if s.get("section_summary")
+            ]
+            exec_summary = doc.get("executive_summary", "")
+        else:
+            section_summaries = [{"section_summary": "placeholder"}]
+            exec_summary = "placeholder"
+
+        payload = {
+            "section_summaries":  section_summaries,
+            "executive_summary":  exec_summary,
+            "extracted_entities": extracted_entities,
+            "reference_entities": reference_entities,
+            "max_claims":         0,   # skip fact verification in this tab
+        }
+
+        with st.spinner("Computing reference-mode entity accuracy..."):
+            try:
+                resp = requests.post(f"{BASE_URL}/evaluate", json=payload, timeout=120)
+                if resp.status_code != 200:
+                    st.error(f"Error {resp.status_code}: {resp.text}")
+                    st.stop()
+
+                data      = resp.json()
+                ent_data  = data.get("entity_accuracy", {}).get("details", {})
+                mode_used = ent_data.get("mode", "unknown")
+
+                if mode_used != "reference":
+                    st.warning(
+                        f"API returned mode '{mode_used}' instead of 'reference'. "
+                        "Check that reference_entities were passed correctly."
+                    )
+
+                overall  = ent_data.get("overall", {})
+                per_cat  = ent_data.get("per_category", {})
+
+                # ── OVERALL SCORES ─────────────────────────────────────────
+                st.markdown("### Overall Scores")
+                oc1, oc2, oc3 = st.columns(3)
+                oc1.markdown(
+                    f'<div class="metric-block">'
+                    f'<div class="metric-value">{overall.get("precision", 0)}</div>'
+                    f'<div class="metric-label">Precision</div></div>',
+                    unsafe_allow_html=True
+                )
+                oc2.markdown(
+                    f'<div class="metric-block">'
+                    f'<div class="metric-value">{overall.get("recall", 0)}</div>'
+                    f'<div class="metric-label">Recall</div></div>',
+                    unsafe_allow_html=True
+                )
+                oc3.markdown(
+                    f'<div class="metric-block">'
+                    f'<div class="metric-value" style="color:#c8742a">{overall.get("f1", 0)}</div>'
+                    f'<div class="metric-label">F1 Score</div></div>',
+                    unsafe_allow_html=True
+                )
+
+                st.markdown("---")
+                st.markdown("### Per-Category Breakdown")
+
+                for cat in CATEGORIES:
+                    info = per_cat.get(cat, {})
+                    if not info:
+                        continue
+
+                    ext_set = {e.lower().strip() for e in extracted_entities.get(cat, [])}
+                    ref_set = {e.lower().strip() for e in reference_entities.get(cat, [])}
+
+                    # Map back to original casing for display
+                    ext_orig = {e.lower().strip(): e for e in extracted_entities.get(cat, [])}
+                    ref_orig = {e.lower().strip(): e for e in reference_entities.get(cat, [])}
+
+                    tp_keys = ext_set & ref_set
+                    fp_keys = ext_set - ref_set
+                    fn_keys = ref_set - ext_set
+
+                    prec = info.get("precision", 0)
+                    rec  = info.get("recall", 0)
+                    f1   = info.get("f1", 0)
+
+                    with st.expander(
+                        f"{cat.replace('_',' ').upper()}   "
+                        f"P={prec}  R={rec}  F1={f1}  "
+                        f"({info.get('matched',0)}/{info.get('reference',0)} matched)"
+                    ):
+                        sc1, sc2, sc3 = st.columns(3)
+                        sc1.metric("Precision", prec)
+                        sc2.metric("Recall",    rec)
+                        sc3.metric("F1",        f1)
+
+                        st.markdown("")
+
+                        # True Positives
+                        if tp_keys:
+                            st.markdown(
+                                '<p class="section-label" style="color:#1a6b3c">✓ True Positives</p>',
+                                unsafe_allow_html=True
+                            )
+                            st.markdown(
+                                "".join(
+                                    f'<span class="entity-tag-tp">'
+                                    f'{ext_orig.get(k, k)}</span>'
+                                    for k in sorted(tp_keys)
+                                ),
+                                unsafe_allow_html=True
+                            )
+                            st.markdown("")
+
+                        # False Positives
+                        if fp_keys:
+                            st.markdown(
+                                '<p class="section-label" style="color:#8b2020">✗ False Positives (extracted but not in reference)</p>',
+                                unsafe_allow_html=True
+                            )
+                            st.markdown(
+                                "".join(
+                                    f'<span class="entity-tag-fp">'
+                                    f'{ext_orig.get(k, k)}</span>'
+                                    for k in sorted(fp_keys)
+                                ),
+                                unsafe_allow_html=True
+                            )
+                            st.markdown("")
+
+                        # False Negatives
+                        if fn_keys:
+                            st.markdown(
+                                '<p class="section-label" style="color:#7a5c10">○ False Negatives (in reference but missed)</p>',
+                                unsafe_allow_html=True
+                            )
+                            st.markdown(
+                                "".join(
+                                    f'<span class="entity-tag-fn">'
+                                    f'{ref_orig.get(k, k)}</span>'
+                                    for k in sorted(fn_keys)
+                                ),
+                                unsafe_allow_html=True
+                            )
+
+                st.markdown("---")
+                st.download_button(
+                    "⬇  Download Reference Evaluation JSON",
+                    data=json.dumps(data, indent=2),
+                    file_name="reference_eval_output.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+
+            except requests.exceptions.Timeout:
+                st.error("Evaluation timed out.")
+            except Exception as e:
+                st.error(f"Request failed: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 7 — SEMANTIC SEARCH
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab7:
     st.markdown('<p class="step-pill">STEP 06 · SEMANTIC SEARCH</p>',
                 unsafe_allow_html=True)
     st.markdown(
@@ -771,14 +1090,12 @@ with tab6:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    # Show LLM answer prominently
                     st.markdown(
                         f'<div class="card-amber"><strong>Answer</strong><br>'
                         f'{data.get("answer","No answer generated.")}</div>',
                         unsafe_allow_html=True
                     )
                     st.caption(f"Based on {data.get('source_count', 0)} source chunks")
-                    # Show source chunks
                     for i, chunk in enumerate(data.get("chunks", []), 1):
                         sentences = [s.strip() for s in chunk.split("\n") if s.strip()]
                         bullets   = "".join(

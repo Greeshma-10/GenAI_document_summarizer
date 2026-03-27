@@ -1,12 +1,5 @@
 """
 Vector Store Service — Pinecone
-
-Handles:
-  1. index_chunks()    — embed and store document chunks in Pinecone
-  2. search()          — semantic search for relevant chunks given a query
-  3. answer()          — RAG: retrieve chunks + LLM answer for a question
-  4. delete_document() — remove all chunks for a specific document
-  5. delete_all()      — clear the entire index
 """
 
 import hashlib
@@ -26,13 +19,15 @@ logger = get_logger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
-UPSERT_BATCH_SIZE          = 100
-METADATA_CHAR_LIMIT        = 3000
-METADATA_CHAR_MIN_FALLBACK = 500
-MIN_CHUNK_TEXT_LEN         = 80
-MAX_SENTENCES_PER_CHUNK    = 8
-MIN_SENTENCE_LEN           = 30
-MATH_SYMBOLS               = set('=∈∑→×·≤≥∗∝∂√∀∃∩∪⊂⊃±∞')
+# Replace constants block completely
+
+UPSERT_BATCH_SIZE = settings.UPSERT_BATCH_SIZE
+METADATA_CHAR_LIMIT = settings.METADATA_CHAR_LIMIT
+METADATA_CHAR_MIN_FALLBACK = settings.METADATA_CHAR_MIN_FALLBACK
+MIN_CHUNK_TEXT_LEN = settings.MIN_CHUNK_TEXT_LEN
+MAX_SENTENCES_PER_CHUNK = settings.MAX_SENTENCES_PER_CHUNK
+MIN_SENTENCE_LEN = settings.MIN_SENTENCE_LEN
+MATH_SYMBOLS = set(settings.MATH_SYMBOLS)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

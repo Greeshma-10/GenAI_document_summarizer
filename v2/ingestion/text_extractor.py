@@ -1,3 +1,6 @@
+"""
+Text support
+"""
 import fitz
 
 def extract_text_from_pdf(file_path):

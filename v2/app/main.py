@@ -1,16 +1,10 @@
-"""
-FastAPI Application Entry Point
-"""
-
 import os
 import re
 import tempfile
 import time
 from typing import Dict, List, Optional
-
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-
 from v2.ingestion.document_parser import parse_document
 from v2.pipelines.summarization.chunking import chunk_text
 from v2.pipelines.summarization.summarizer import summarize_chunks
@@ -42,12 +36,12 @@ app = FastAPI(
 graph_service = GraphService()
 
 try:
-    vector_store  = VectorStore()
+    vector_store = VectorStore()
     fact_verifier = FactVerifier(graph_service, vector_store=vector_store)
     logger.info("Pinecone vector store initialised successfully")
 except Exception:
     logger.warning("Pinecone unavailable — falling back to keyword-only fact verification")
-    vector_store  = None
+    vector_store = None
     fact_verifier = FactVerifier(graph_service)
 
 
@@ -76,20 +70,20 @@ class EvaluationRequest(BaseModel):
 
 # ── Dedup helper ──────────────────────────────────────────────────────────────
 
-_INVERSE_PAIRS         = {"USES": "USED_IN", "USED_IN": "USES"}
+_INVERSE_PAIRS= {"USES": "USED_IN", "USED_IN": "USES"}
 _SUBJECT_MUST_BE_TYPED = {
     "DEVELOPED_BY", "PROPOSED_BY", "TRAINED_ON",
     "EVALUATED_ON", "APPLIED_TO", "PART_OF",
 }
 
 def _dedup_triples(all_triples, type_map):
-    seen_keys      = set()
+    seen_keys = set()
     unique_triples = []
     for t in all_triples:
         subj = t.subject.strip()
-        obj  = t.object.strip()
-        rel  = t.relation
-        key  = (subj.lower(), rel, obj.lower())
+        obj = t.object.strip()
+        rel = t.relation
+        key = (subj.lower(), rel, obj.lower())
         if key in seen_keys:
             continue
         inverse_rel = _INVERSE_PAIRS.get(rel)
@@ -132,35 +126,21 @@ def _index_chunks_in_pinecone(chunks: List[str], filename: str) -> None:
         logger.exception("Pinecone indexing failed | filename=%s", filename)
 
 
-# ── Health ────────────────────────────────────────────────────────────────────
-
-@app.get("/")
-def health_check():
-    return {
-        "status":   "healthy",
-        "version":  "2.0",
-        "services": {
-            "neo4j":    "connected",
-            "pinecone": "connected" if vector_store else "unavailable",
-        }
-    }
-
-
 # ── Summarise ─────────────────────────────────────────────────────────────────
 
 @app.post("/summarize")
 async def summarize(
     file: UploadFile = File(...),
-    mode: str        = Form("academic"),
+    mode: str = Form("academic"),
 ):
-    mode        = _validate_mode(mode)
+    mode = _validate_mode(mode)
     total_start = time.time()
-    temp_path   = await _save_upload(file)
+    temp_path = await _save_upload(file)
 
     try:
-        t0             = time.time()
-        document_data  = parse_document(temp_path)
-        ingestion_time = round(time.time() - t0, 2)
+        t0 = time.time()
+        document_data = parse_document(temp_path)
+        ingestion_time= round(time.time() - t0, 2)
         logger.info("Ingestion complete | time=%.2fs", ingestion_time)
 
         combined_text = (
@@ -168,24 +148,24 @@ async def summarize(
             document_data.get("image_text", "")
         )
 
-        t0            = time.time()
-        chunks        = chunk_text(combined_text)
+        t0 = time.time()
+        chunks = chunk_text(combined_text)
         chunking_time = round(time.time() - t0, 2)
         logger.info("Chunking complete | chunks=%d time=%.2fs", len(chunks), chunking_time)
 
         _index_chunks_in_pinecone(chunks, file.filename)
 
-        t0              = time.time()
+        t0 = time.time()
         chunk_summaries = summarize_chunks(chunks, mode=mode)
-        chunk_time      = round(time.time() - t0, 2)
+        chunk_time = round(time.time() - t0, 2)
         logger.info("Chunk summarisation complete | time=%.2fs", chunk_time)
 
-        t0                 = time.time()
-        semantic_sections  = build_semantic_sections(chunk_summaries)
+        t0 = time.time()
+        semantic_sections = build_semantic_sections(chunk_summaries)
         section_build_time = round(time.time() - t0, 2)
         logger.info("Section building complete | sections=%d", len(semantic_sections))
 
-        t0                = time.time()
+        t0 = time.time()
         section_summaries = []
         for section in semantic_sections:
             section_summary = summarize_section(
@@ -210,7 +190,7 @@ async def summarize(
         executive_time = round(time.time() - t0, 2)
         logger.info("Executive summary complete | time=%.2fs", executive_time)
 
-        final_output  = assemble_document(
+        final_output = assemble_document(
             executive_output=executive_summary,
             section_outputs=section_summaries,
             chunk_outputs=chunk_summaries,
@@ -239,32 +219,11 @@ async def summarize(
             for v in values
         }
 
-        relation_extractor = RelationExtractor()
-        graph_builder      = GraphBuilder()
-        all_triples        = []
-
-        for sec in section_summaries:
-            sec_text = sec.get("section_summary", "")
-            if sec_text:
-                all_triples.extend(
-                    relation_extractor.extract_relations(sec_text, entity_dict)
-                )
-
-        unique_triples = _dedup_triples(all_triples, type_map)
-
-        try:
-            graph_builder.clear_graph()
-            graph_builder.insert_triples(unique_triples)
-            logger.info("Inserted %d triples into Neo4j", len(unique_triples))
-        except Exception:
-            logger.exception("Neo4j triple insertion failed")
-
         total_time = round(time.time() - total_start, 2)
         logger.info("Summarisation pipeline complete | total_time=%.2fs", total_time)
 
         response = final_output.model_dump()
         response["entities"] = merged_entities
-        response["graph"]    = {"triples_inserted": len(unique_triples)}
         response["performance"] = {
             "ingestion_time_sec":             ingestion_time,
             "chunking_time_sec":              chunking_time,
@@ -287,9 +246,9 @@ async def summarize(
 @app.post("/entities")
 async def extract_entities_api(
     file: UploadFile = File(...),
-    mode: str        = Form("academic"),
+    mode: str = Form("academic"),
 ):
-    mode      = _validate_mode(mode)
+    mode = _validate_mode(mode)
     temp_path = await _save_upload(file)
     try:
         return run_entity_pipeline(temp_path, mode=mode)
@@ -302,17 +261,17 @@ async def extract_entities_api(
 @app.post("/graph/build")
 async def build_graph_api(
     file: UploadFile = File(...),
-    mode: str        = Form("academic"),
+    mode: str = Form("academic"),
 ):
-    mode      = _validate_mode(mode)
+    mode = _validate_mode(mode)
     temp_path = await _save_upload(file)
     try:
         if vector_store:
             try:
                 from v2.ingestion.document_parser import build_document_text
-                parsed   = parse_document(temp_path)
+                parsed = parse_document(temp_path)
                 raw_text = build_document_text(parsed)
-                chunks   = chunk_text(raw_text)
+                chunks = chunk_text(raw_text)
                 _index_chunks_in_pinecone(chunks, file.filename)
             except Exception:
                 logger.exception("Pinecone pre-indexing failed during graph build")
@@ -327,13 +286,13 @@ _VALID_ENTITY_TYPES = {"MODEL", "DATASET", "METRIC", "ORGANIZATION", "TASK", "CO
 
 @app.get("/graph/query")
 def query_graph(
-    type:        str           = Query("neighbours"),
+    type:        str = Query("neighbours"),
     entity:      Optional[str] = Query(None),
     from_entity: Optional[str] = Query(None, alias="from"),
     to_entity:   Optional[str] = Query(None, alias="to"),
     entity_type: Optional[str] = Query(None),
-    depth:       int           = Query(2),
-    limit:       int           = Query(20),
+    depth:       int = Query(2),
+    limit:       int = Query(20),
 ):
     try:
         if type == "neighbours":
@@ -399,10 +358,10 @@ def verify_facts_batch(request: BatchFactCheckRequest):
     if not request.claims:
         raise HTTPException(400, "Claims list cannot be empty")
     try:
-        results      = fact_verifier.verify_batch(request.claims, request.source_text or "")
-        supported    = sum(1 for r in results if r["verdict"] == "SUPPORTED")
+        results = fact_verifier.verify_batch(request.claims, request.source_text or "")
+        supported = sum(1 for r in results if r["verdict"] == "SUPPORTED")
         contradicted = sum(1 for r in results if r["verdict"] == "CONTRADICTED")
-        unverified   = sum(1 for r in results if r["verdict"] == "UNVERIFIED")
+        unverified = sum(1 for r in results if r["verdict"] == "UNVERIFIED")
         return {
             "total": len(results), "supported": supported,
             "contradicted": contradicted, "unverified": unverified,

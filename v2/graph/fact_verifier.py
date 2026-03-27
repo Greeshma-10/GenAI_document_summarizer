@@ -1,12 +1,3 @@
-"""
-Fact Verification Module — Production Version
-
-Uses:
-- Centralized prompts from v2.prompts.fact_verification
-- Structured logging via v2.config.logging_config
-- No hardcoded prompts, no emojis, no print()
-"""
-
 import re
 import json
 from collections import defaultdict

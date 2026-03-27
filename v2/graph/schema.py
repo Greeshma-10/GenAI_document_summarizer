@@ -20,8 +20,8 @@ RELATION_TYPES: List[str] = [
     "DEVELOPED_BY",
     "PROPOSED_BY",
     "USES",
-    "USED_IN",          # ← ADDED: CONCEPT used in MODEL
-    "TRAINED_ON",       # ← FIXED spelling (was TRAINING_ON)
+    "USED_IN",          
+    "TRAINED_ON",       
     "EVALUATED_ON",
     "APPLIED_TO",
     "USED_FOR",

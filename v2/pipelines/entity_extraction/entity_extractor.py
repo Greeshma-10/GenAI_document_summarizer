@@ -1,8 +1,5 @@
 """
 Entity Extractor
-
-Extracts structured entities from research and academic text
-using a Bedrock-backed LLM and a centralized prompt library.
 """
 
 from v2.services.bedrock_service import invoke_llm

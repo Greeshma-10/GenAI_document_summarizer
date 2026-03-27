@@ -1,9 +1,13 @@
+"""
+Image support 
+"""
 import fitz
 import pytesseract
 from PIL import Image
 import io
+from v2.config import settings
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Users\greeshmav\Tesseract-OCR\tesseract.exe"
+pytesseract.pytesseract.tesseract_cmd = settings.TESSERACT_CMD
 
 def extract_image_text(pdf_path):
 

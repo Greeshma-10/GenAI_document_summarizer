@@ -1,11 +1,5 @@
 """
-Graph Service — Production Version
-
-Uses:
-- Centralized prompt from v2.prompts.cypher
-- Structured logging via v2.logging_config
-- Keep-alive Neo4j connection with auto-reconnect
-- Depth inlined in subgraph query (Neo4j param limitation fix)
+Graph Service 
 """
 
 import os
@@ -234,21 +228,6 @@ class GraphService:
         return match.group(1).strip() if match else text.strip()
 
     def _fix_cypher(self, cypher: str) -> str:
-        """
-        Fix three common LLM-generated Cypher mistakes:
-
-        1. Name filter inside node pattern:
-             BAD:  (n:Entity {name: toLower("Foo")})
-             GOOD: (n:Entity) WHERE toLower(n.name) = toLower("Foo")
-
-        2. Extra closing paren after property map:
-             BAD:  MATCH (m:Entity {type: "MODEL"}))-[r:USES]->
-             GOOD: MATCH (m:Entity {type: "MODEL"})-[r:USES]->
-
-        3. Two separate property maps on one node:
-             BAD:  (n:Entity {type: "X"} {name: "Y"})
-             GOOD: (n:Entity {type: "X", name: "Y"})
-        """
         # Fix 1 — name filter in node pattern
         matches = _BAD_NAME_FILTER.findall(cypher)
         if matches:
